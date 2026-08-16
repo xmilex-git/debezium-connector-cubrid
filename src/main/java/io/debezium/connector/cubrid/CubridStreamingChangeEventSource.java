@@ -33,6 +33,10 @@ import io.debezium.util.Clock;
  * and published in log order on COMMIT DCL, discarded on ABORT DCL. The persisted offset is the
  * <em>anchor</em> — the batch-boundary LSA/counter of the oldest in-flight transaction — so a
  * restart replays whole transactions and re-derives identical counters (at-least-once).
+ * <p>
+ * Offset invariant (workspace#45): a committing transaction stays in the in-flight set until every
+ * one of its events has been enqueued, so no record ever carries an anchor past that transaction's
+ * own first-DML batch boundary — a partially-acked commit is always fully replayable on restart.
  */
 public class CubridStreamingChangeEventSource implements StreamingChangeEventSource<CubridPartition, CubridOffsetContext> {
 
@@ -57,11 +61,11 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     }
 
     /** One buffered DML with the counter it was assigned when read from the stream. */
-    private record BufferedChange(long seq, TableId tableId, RawLogItem item) {
+    record BufferedChange(long seq, TableId tableId, RawLogItem item) {
     }
 
     /** Per-transaction buffer, remembering the batch boundary at which its first item arrived. */
-    private static final class TxnBuffer {
+    static final class TxnBuffer {
         final long startLsaRaw;
         final long startSeq;
         final List<BufferedChange> changes = new ArrayList<>();
@@ -70,6 +74,29 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             this.startLsaRaw = startLsaRaw;
             this.startSeq = startSeq;
         }
+    }
+
+    /** Buffering/anchor state carried across batches — package-private so {@link #processBatch} is unit-testable. */
+    static final class StreamState {
+        // insertion order = first-DML order, so the first entry is the oldest in-flight txn
+        final LinkedHashMap<Integer, TxnBuffer> inflight = new LinkedHashMap<>();
+        long counter;
+
+        StreamState(long counter) {
+            this.counter = counter;
+        }
+    }
+
+    /** Receives anchor advances; the production sink is {@link CubridOffsetContext#setAnchor}. */
+    @FunctionalInterface
+    interface AnchorSink {
+        void setAnchor(long lsaRaw, long seq);
+    }
+
+    /** Publishes the buffered changes of a committed transaction. */
+    @FunctionalInterface
+    interface CommitSink {
+        void publish(TxnBuffer buffer, RawLogItem commitDcl) throws InterruptedException;
     }
 
     @Override
@@ -101,57 +128,21 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                 LOGGER.info("No prior offset — starting CUBRID CDC stream at current log end {}", Lsa.fromRaw(cursor));
             }
 
-            // insertion order = first-DML order, so the first entry is the oldest in-flight txn
-            final LinkedHashMap<Integer, TxnBuffer> inflight = new LinkedHashMap<>();
+            final StreamState state = new StreamState(counter);
 
             while (context.isRunning()) {
                 final long batchInLsaRaw = cursor;
-                final long batchStartCounter = counter;
 
                 final CubridLogClient.ExtractBatch batch = client.extract(cursor);
                 cursor = batch.lsaOut();
 
-                for (RawLogItem item : batch.items()) {
-                    if (item.type() == RawLogItem.ItemType.TIMER) {
-                        continue; // not counted (ADR 0004) — batch-level heartbeat advances the offset
-                    }
-                    counter++;
-
-                    switch (item.type()) {
-                        case DML -> {
-                            final TableId tableId = tableByClassoid.get(item.classoid());
-                            if (tableId == null || schema.tableFor(tableId) == null) {
-                                continue; // not captured — counted but never buffered/published
-                            }
-                            inflight.computeIfAbsent(item.transactionId(), trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter))
-                                    .changes.add(new BufferedChange(counter, tableId, item));
-                        }
-                        case DCL -> {
-                            final TxnBuffer buffer = inflight.remove(item.transactionId());
-                            if (buffer == null) {
-                                continue;
-                            }
-                            if (item.dclType() == RawLogItem.DclType.COMMIT) {
-                                publishTransaction(partition, offsetContext, inflight, buffer, item, batchInLsaRaw, batchStartCounter);
-                            }
-                            else {
-                                LOGGER.debug("Discarding {} buffered changes of aborted trid {}", buffer.changes.size(), item.transactionId());
-                            }
-                        }
-                        default -> {
-                            // DDL — counted for determinism, never emitted (fixed-schema POC)
-                        }
-                    }
-                }
-
-                // whole batch consumed: with nothing in flight the anchor may advance to the batch end
-                if (inflight.isEmpty()) {
-                    offsetContext.setAnchor(Lsa.fromRaw(cursor), counter);
-                }
-                else {
-                    final TxnBuffer oldest = inflight.values().iterator().next();
-                    offsetContext.setAnchor(Lsa.fromRaw(oldest.startLsaRaw), oldest.startSeq);
-                }
+                processBatch(state, batch.items(), batchInLsaRaw, cursor,
+                        classoid -> {
+                            final TableId tableId = tableByClassoid.get(classoid);
+                            return tableId != null && schema.tableFor(tableId) != null ? tableId : null;
+                        },
+                        (lsaRaw, seq) -> offsetContext.setAnchor(Lsa.fromRaw(lsaRaw), seq),
+                        (buffer, commitDcl) -> publishTransaction(partition, offsetContext, buffer, commitDcl));
                 dispatcher.dispatchHeartbeatEvent(partition, offsetContext);
             }
         }
@@ -171,25 +162,69 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         }
     }
 
-    private void publishTransaction(CubridPartition partition, CubridOffsetContext offsetContext,
-                                    LinkedHashMap<Integer, TxnBuffer> inflight, TxnBuffer buffer,
-                                    RawLogItem commitDcl, long batchInLsaRaw, long batchStartCounter)
+    /**
+     * Consumes one extract batch: assigns the deterministic counter, buffers DML per transaction,
+     * publishes on COMMIT and discards on ABORT (ADR 0004). A committing transaction is removed
+     * from {@code state.inflight} only <em>after</em> {@code commitSink} returns, so the anchor it
+     * emits is bounded by its own start (workspace#45).
+     */
+    static void processBatch(StreamState state, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
+                             java.util.function.LongFunction<TableId> capturedTableFor,
+                             AnchorSink anchorSink, CommitSink commitSink)
             throws InterruptedException {
-        // The anchor while publishing must not pass the oldest transaction still in flight, nor
-        // the start of the current (partially processed) batch.
-        final Lsa anchorLsa;
-        final long anchorSeq;
-        if (!inflight.isEmpty()) {
-            final TxnBuffer oldest = inflight.values().iterator().next();
-            anchorLsa = Lsa.fromRaw(oldest.startLsaRaw);
-            anchorSeq = oldest.startSeq;
+        final long batchStartCounter = state.counter;
+
+        for (RawLogItem item : items) {
+            if (item.type() == RawLogItem.ItemType.TIMER) {
+                continue; // not counted (ADR 0004) — batch-level heartbeat advances the offset
+            }
+            state.counter++;
+
+            switch (item.type()) {
+                case DML -> {
+                    final TableId tableId = capturedTableFor.apply(item.classoid());
+                    if (tableId == null) {
+                        continue; // not captured — counted but never buffered/published
+                    }
+                    state.inflight.computeIfAbsent(item.transactionId(), trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter))
+                            .changes.add(new BufferedChange(state.counter, tableId, item));
+                }
+                case DCL -> {
+                    final TxnBuffer buffer = state.inflight.get(item.transactionId());
+                    if (buffer == null) {
+                        continue;
+                    }
+                    if (item.dclType() == RawLogItem.DclType.COMMIT) {
+                        // anchor while publishing = oldest in-flight start, the committing
+                        // transaction itself included — never past its own first DML (workspace#45)
+                        final TxnBuffer oldest = state.inflight.values().iterator().next();
+                        anchorSink.setAnchor(oldest.startLsaRaw, oldest.startSeq);
+                        commitSink.publish(buffer, item);
+                    }
+                    else {
+                        LOGGER.debug("Discarding {} buffered changes of aborted trid {}", buffer.changes.size(), item.transactionId());
+                    }
+                    state.inflight.remove(item.transactionId());
+                }
+                default -> {
+                    // DDL — counted for determinism, never emitted (fixed-schema POC)
+                }
+            }
+        }
+
+        // whole batch consumed: with nothing in flight the anchor may advance to the batch end
+        if (state.inflight.isEmpty()) {
+            anchorSink.setAnchor(batchOutLsaRaw, state.counter);
         }
         else {
-            anchorLsa = Lsa.fromRaw(batchInLsaRaw);
-            anchorSeq = batchStartCounter;
+            final TxnBuffer oldest = state.inflight.values().iterator().next();
+            anchorSink.setAnchor(oldest.startLsaRaw, oldest.startSeq);
         }
-        offsetContext.setAnchor(anchorLsa, anchorSeq);
+    }
 
+    private void publishTransaction(CubridPartition partition, CubridOffsetContext offsetContext,
+                                    TxnBuffer buffer, RawLogItem commitDcl)
+            throws InterruptedException {
         final Instant commitTs = Instant.ofEpochSecond(commitDcl.timestamp());
 
         for (BufferedChange change : buffer.changes) {
