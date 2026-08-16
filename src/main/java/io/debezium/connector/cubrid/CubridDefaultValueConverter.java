@@ -13,7 +13,7 @@ import io.debezium.relational.DefaultValueConverter;
 /**
  * Converter for table column default values.
  * <p>
- * TODO(workspace#39): column default values are not resolved during the POC snapshot.
+ * Column default values are not resolved during the POC snapshot (out of scope).
  */
 public class CubridDefaultValueConverter implements DefaultValueConverter {
 

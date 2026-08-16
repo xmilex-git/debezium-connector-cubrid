@@ -24,6 +24,13 @@ import io.debezium.util.Collect;
 /**
  * The connector offset, persisted as the four flat numeric keys mandated by ADR 0004
  * ({@code page_id}, {@code lsa_offset}, {@code seq}, {@code epoch}) plus the standard snapshot keys.
+ * <p>
+ * The persisted position is the <em>anchor</em> — the batch-boundary LSA of the oldest still
+ * in-flight transaction (or the last batch boundary when none) plus the cumulative non-TIMER item
+ * counter at that boundary. It is distinct from the per-event counter carried in
+ * {@link SourceInfo#getSeq()} ({@code source.lsn}): resuming from the anchor re-reads and
+ * re-numbers items deterministically, so republished events keep their original counter
+ * (at-least-once, ADR 0004).
  */
 public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
 
@@ -34,11 +41,17 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
     private final IncrementalSnapshotContext<TableId> incrementalSnapshotContext;
     private boolean snapshotCompleted;
 
+    private Lsa anchorLsa;
+    private long anchorSeq;
+
     public CubridOffsetContext(CubridConnectorConfig connectorConfig, Lsa lsa, long seq, int epoch,
                                boolean snapshot, boolean snapshotCompleted,
                                TransactionContext transactionContext,
                                IncrementalSnapshotContext<TableId> incrementalSnapshotContext) {
         super(new SourceInfo(connectorConfig));
+
+        this.anchorLsa = lsa;
+        this.anchorSeq = seq;
 
         sourceInfo.setLsa(lsa);
         sourceInfo.setSeq(seq);
@@ -69,13 +82,13 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
             return Collect.hashMapOf(
                     SourceInfo.SNAPSHOT_KEY, true,
                     SNAPSHOT_COMPLETED_KEY, snapshotCompleted,
-                    SourceInfo.PAGE_ID_KEY, sourceInfo.getPageId(),
-                    SourceInfo.LSA_OFFSET_KEY, sourceInfo.getLsaOffset());
+                    SourceInfo.PAGE_ID_KEY, anchorLsa.pageId(),
+                    SourceInfo.LSA_OFFSET_KEY, anchorLsa.offset());
         }
         return incrementalSnapshotContext.store(transactionContext.store(Collect.hashMapOf(
-                SourceInfo.PAGE_ID_KEY, sourceInfo.getPageId(),
-                SourceInfo.LSA_OFFSET_KEY, sourceInfo.getLsaOffset(),
-                SourceInfo.SEQ_KEY, sourceInfo.getSeq(),
+                SourceInfo.PAGE_ID_KEY, anchorLsa.pageId(),
+                SourceInfo.LSA_OFFSET_KEY, anchorLsa.offset(),
+                SourceInfo.SEQ_KEY, anchorSeq,
                 SourceInfo.EPOCH_KEY, (long) sourceInfo.getEpoch())));
     }
 
@@ -84,25 +97,34 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
         return sourceInfoSchema;
     }
 
-    public Lsa getLsa() {
-        return sourceInfo.getLsa();
-    }
-
-    public void setLsa(Lsa lsa) {
-        sourceInfo.setLsa(lsa);
-    }
-
-    public long getSeq() {
-        return sourceInfo.getSeq();
+    /**
+     * The restart anchor (ADR 0004): batch-boundary LSA of the oldest in-flight transaction, or
+     * the last processed batch boundary when none is in flight.
+     */
+    public Lsa getAnchorLsa() {
+        return anchorLsa;
     }
 
     /**
-     * Advances the event counter that serves as the connector position (ADR 0004).
+     * The cumulative non-TIMER item counter at {@link #getAnchorLsa()} — resuming continues
+     * counting from this value.
      */
-    public long incrementSeq() {
-        long next = sourceInfo.getSeq() + 1;
-        sourceInfo.setSeq(next);
-        return next;
+    public long getAnchorSeq() {
+        return anchorSeq;
+    }
+
+    public void setAnchor(Lsa lsa, long seq) {
+        this.anchorLsa = lsa;
+        this.anchorSeq = seq;
+        // keep the informational source coordinates in step with the persisted anchor
+        sourceInfo.setLsa(lsa);
+    }
+
+    /**
+     * Sets the per-event counter exposed as {@code source.lsn} for the record being emitted.
+     */
+    public void setEventSeq(long seq) {
+        sourceInfo.setSeq(seq);
     }
 
     public void setTxId(int txId) {
@@ -147,7 +169,9 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
 
     @Override
     public String toString() {
-        return "CubridOffsetContext [sourceInfo=" + sourceInfo + ", snapshotCompleted=" + snapshotCompleted + "]";
+        return "CubridOffsetContext [sourceInfo=" + sourceInfo
+                + ", anchorLsa=" + anchorLsa + ", anchorSeq=" + anchorSeq
+                + ", snapshotCompleted=" + snapshotCompleted + "]";
     }
 
     public static class Loader implements OffsetContext.Loader<CubridOffsetContext> {

@@ -61,7 +61,7 @@ public class CubridChangeEventSourceFactory implements ChangeEventSourceFactory<
 
     @Override
     public StreamingChangeEventSource<CubridPartition, CubridOffsetContext> getStreamingChangeEventSource() {
-        return new CubridStreamingChangeEventSource(configuration, dispatcher, errorHandler, clock, schema);
+        return new CubridStreamingChangeEventSource(configuration, connectionFactory.mainConnection(), dispatcher, errorHandler, clock, schema);
     }
 
     @Override
