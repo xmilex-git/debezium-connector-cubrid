@@ -165,7 +165,7 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     @Override
     public Optional<? extends EnumeratedValue> getSnapshotLockingMode() {
-        // The POC snapshot never locks; see TODO(workspace#39).
+        // The POC snapshot never locks — write stop is an operator procedure (ADR 0005 D2).
         return Optional.empty();
     }
 

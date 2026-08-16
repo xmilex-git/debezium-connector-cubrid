@@ -11,7 +11,7 @@ import io.debezium.pipeline.ErrorHandler;
 /**
  * Error handler for the CUBRID connector.
  * <p>
- * TODO(workspace#38): classify retriable cubrid_log failures once the failure modes are known.
+ * TODO: classify retriable cubrid_log failures once the failure modes are known (post-POC).
  */
 public class CubridErrorHandler extends ErrorHandler {
 

@@ -75,6 +75,19 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
                 new CubridPartition.Provider(connectorConfig),
                 new CubridOffsetContext.Loader(connectorConfig));
 
+        // Non-historized schema bootstrap (Postgres model): read the captured tables' structure
+        // from the database on every start, so a restart that skips the snapshot phase can stream.
+        try {
+            for (TableId tableId : dataConnection.readUserTableIds(connectorConfig.getDatabaseName())) {
+                if (connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
+                    dataConnection.readTable(tableId).ifPresent(schema::refresh);
+                }
+            }
+        }
+        catch (SQLException e) {
+            throw new io.debezium.DebeziumException("Failed to bootstrap the table schemas from the database", e);
+        }
+
         // Manual bean registration
         connectorConfig.getBeanRegistry().add(StandardBeanNames.CONFIGURATION, config);
         connectorConfig.getBeanRegistry().add(StandardBeanNames.CONNECTOR_CONFIG, connectorConfig);
