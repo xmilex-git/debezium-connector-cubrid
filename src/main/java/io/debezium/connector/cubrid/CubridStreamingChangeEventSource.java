@@ -8,9 +8,13 @@ package io.debezium.connector.cubrid;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.LongSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,16 +52,19 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     private final ErrorHandler errorHandler;
     private final Clock clock;
     private final CubridDatabaseSchema schema;
+    private final TxnBufferMetrics metrics;
 
     public CubridStreamingChangeEventSource(CubridConnectorConfig connectorConfig, CubridConnection connection,
                                             EventDispatcher<CubridPartition, TableId> dispatcher,
-                                            ErrorHandler errorHandler, Clock clock, CubridDatabaseSchema schema) {
+                                            ErrorHandler errorHandler, Clock clock, CubridDatabaseSchema schema,
+                                            TxnBufferMetrics metrics) {
         this.connectorConfig = connectorConfig;
         this.connection = connection;
         this.dispatcher = dispatcher;
         this.errorHandler = errorHandler;
         this.clock = clock;
         this.schema = schema;
+        this.metrics = metrics;
     }
 
     /** One buffered DML with the counter it was assigned when read from the stream. */
@@ -68,11 +75,13 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     static final class TxnBuffer {
         final long startLsaRaw;
         final long startSeq;
+        final long firstBufferedAtMs;
         final List<BufferedChange> changes = new ArrayList<>();
 
-        TxnBuffer(long startLsaRaw, long startSeq) {
+        TxnBuffer(long startLsaRaw, long startSeq, long firstBufferedAtMs) {
             this.startLsaRaw = startLsaRaw;
             this.startSeq = startSeq;
+            this.firstBufferedAtMs = firstBufferedAtMs;
         }
     }
 
@@ -80,11 +89,49 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     static final class StreamState {
         // insertion order = first-DML order, so the first entry is the oldest in-flight txn
         final LinkedHashMap<Integer, TxnBuffer> inflight = new LinkedHashMap<>();
+        // trids abandoned by the buffer policy (ADR 0007) whose later items must be skipped;
+        // an entry is dropped when the transaction's terminal DCL arrives (trids are reused)
+        final Set<Integer> abandoned = new HashSet<>();
         long counter;
 
         StreamState(long counter) {
             this.counter = counter;
         }
+    }
+
+    /**
+     * Opt-in per-transaction buffer caps (ADR 0007). Both caps default to 0 = disabled; the clock
+     * is injectable so retention is unit-testable.
+     */
+    record BufferPolicy(long eventsThreshold, long retentionMs, LongSupplier nowMs) {
+        static final BufferPolicy UNLIMITED = new BufferPolicy(0, 0, System::currentTimeMillis);
+    }
+
+    /** Buffer-policy observability hooks; the production sink is {@link CubridStreamingChangeEventSourceMetrics}. */
+    interface TxnBufferMetrics {
+
+        TxnBufferMetrics NO_OP = new TxnBufferMetrics() {
+            @Override
+            public void onOversizedAbandon(int trid) {
+            }
+
+            @Override
+            public void onRetentionAbandon(int trid) {
+            }
+
+            @Override
+            public void onBatchEnd(int activeCount, long oldestAgeMs) {
+            }
+        };
+
+        /** A transaction exceeded {@code transaction.events.threshold} and was abandoned (D2). */
+        void onOversizedAbandon(int trid);
+
+        /** A transaction exceeded {@code transaction.retention.ms} and was abandoned (D3). */
+        void onRetentionAbandon(int trid);
+
+        /** Batch-end gauges: in-flight transaction count and the oldest in-flight age (0 when none). */
+        void onBatchEnd(int activeCount, long oldestAgeMs);
     }
 
     /** Receives anchor advances; the production sink is {@link CubridOffsetContext#setAnchor}. */
@@ -129,6 +176,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             }
 
             final StreamState state = new StreamState(counter);
+            final BufferPolicy policy = new BufferPolicy(
+                    connectorConfig.getTransactionEventsThreshold(),
+                    connectorConfig.getTransactionRetentionMs(),
+                    System::currentTimeMillis);
 
             while (context.isRunning()) {
                 final long batchInLsaRaw = cursor;
@@ -136,13 +187,14 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                 final CubridLogClient.ExtractBatch batch = client.extract(cursor);
                 cursor = batch.lsaOut();
 
-                processBatch(state, batch.items(), batchInLsaRaw, cursor,
+                processBatch(state, policy, batch.items(), batchInLsaRaw, cursor,
                         classoid -> {
                             final TableId tableId = tableByClassoid.get(classoid);
                             return tableId != null && schema.tableFor(tableId) != null ? tableId : null;
                         },
                         (lsaRaw, seq) -> offsetContext.setAnchor(Lsa.fromRaw(lsaRaw), seq),
-                        (buffer, commitDcl) -> publishTransaction(partition, offsetContext, buffer, commitDcl));
+                        (buffer, commitDcl) -> publishTransaction(partition, offsetContext, buffer, commitDcl),
+                        metrics);
                 dispatcher.dispatchHeartbeatEvent(partition, offsetContext);
             }
         }
@@ -170,10 +222,17 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
      * before it can ever publish. A committing transaction is removed
      * from {@code state.inflight} only <em>after</em> {@code commitSink} returns, so the anchor it
      * emits is bounded by its own start (workspace#45).
+     * <p>
+     * Buffer policy (ADR 0007, opt-in via {@code policy}): a transaction buffering more than
+     * {@code eventsThreshold} events, or staying in flight longer than {@code retentionMs}, is
+     * <em>abandoned</em> — its buffer is discarded, its later items are skipped via
+     * {@code state.abandoned}, and the anchor advances past it at batch end. Abandoned changes are
+     * permanently lost downstream; recovery is a re-snapshot. Items of abandoned transactions stay
+     * counted, so counter determinism on replay is unaffected.
      */
-    static void processBatch(StreamState state, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
+    static void processBatch(StreamState state, BufferPolicy policy, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
                              java.util.function.LongFunction<TableId> capturedTableFor,
-                             AnchorSink anchorSink, CommitSink commitSink)
+                             AnchorSink anchorSink, CommitSink commitSink, TxnBufferMetrics metrics)
             throws InterruptedException {
         final long batchStartCounter = state.counter;
 
@@ -185,16 +244,29 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
 
             switch (item.type()) {
                 case DML -> {
+                    if (state.abandoned.contains(item.transactionId())) {
+                        continue; // counted for determinism, but the transaction was abandoned (ADR 0007)
+                    }
                     final TableId tableId = capturedTableFor.apply(item.classoid());
                     if (tableId == null) {
                         continue; // not captured — counted but never buffered/published
                     }
-                    state.inflight.computeIfAbsent(item.transactionId(), trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter))
-                            .changes.add(new BufferedChange(state.counter, tableId, item));
+                    final TxnBuffer buffer = state.inflight.computeIfAbsent(item.transactionId(),
+                            trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter, policy.nowMs().getAsLong()));
+                    buffer.changes.add(new BufferedChange(state.counter, tableId, item));
+                    if (policy.eventsThreshold() > 0 && buffer.changes.size() > policy.eventsThreshold()) {
+                        state.inflight.remove(item.transactionId());
+                        state.abandoned.add(item.transactionId());
+                        metrics.onOversizedAbandon(item.transactionId());
+                        LOGGER.warn("Abandoning trid {}: buffered {} events, over transaction.events.threshold {} — "
+                                + "its changes are permanently lost downstream; recover with a re-snapshot (ADR 0007 D2)",
+                                item.transactionId(), buffer.changes.size(), policy.eventsThreshold());
+                    }
                 }
                 case DCL -> {
                     final TxnBuffer buffer = state.inflight.get(item.transactionId());
                     if (buffer == null) {
+                        state.abandoned.remove(item.transactionId()); // transaction over — the trid may be reused
                         continue;
                     }
                     if (item.dclType() == RawLogItem.DclType.COMMIT) {
@@ -229,13 +301,35 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             }
         }
 
+        // retention abandon (ADR 0007 D3): dropping an expired transaction here, before the anchor
+        // is derived, is what advances the anchor past it — to the next oldest in-flight start, or
+        // to the batch end when nothing else is in flight
+        final long nowMs = policy.nowMs().getAsLong();
+        if (policy.retentionMs() > 0) {
+            for (Iterator<Map.Entry<Integer, TxnBuffer>> it = state.inflight.entrySet().iterator(); it.hasNext();) {
+                final Map.Entry<Integer, TxnBuffer> entry = it.next();
+                final long ageMs = nowMs - entry.getValue().firstBufferedAtMs;
+                if (ageMs > policy.retentionMs()) {
+                    it.remove();
+                    state.abandoned.add(entry.getKey());
+                    metrics.onRetentionAbandon(entry.getKey());
+                    LOGGER.warn("Abandoning trid {} after {} ms in flight, over transaction.retention.ms {} — "
+                            + "the restart anchor advances past it and its changes are permanently lost downstream; "
+                            + "recover with a re-snapshot (ADR 0007 D3)",
+                            entry.getKey(), ageMs, policy.retentionMs());
+                }
+            }
+        }
+
         // whole batch consumed: with nothing in flight the anchor may advance to the batch end
         if (state.inflight.isEmpty()) {
             anchorSink.setAnchor(batchOutLsaRaw, state.counter);
+            metrics.onBatchEnd(0, 0);
         }
         else {
             final TxnBuffer oldest = state.inflight.values().iterator().next();
             anchorSink.setAnchor(oldest.startLsaRaw, oldest.startSeq);
+            metrics.onBatchEnd(state.inflight.size(), Math.max(0, nowMs - oldest.firstBufferedAtMs));
         }
     }
 

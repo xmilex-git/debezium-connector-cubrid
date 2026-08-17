@@ -31,11 +31,13 @@ public class CubridChangeEventSourceFactory implements ChangeEventSourceFactory<
     private final Clock clock;
     private final CubridDatabaseSchema schema;
     private final SnapshotterService snapshotterService;
+    private final CubridStreamingChangeEventSourceMetrics streamingMetrics;
 
     public CubridChangeEventSourceFactory(CubridConnectorConfig configuration,
                                           MainConnectionProvidingConnectionFactory<CubridConnection> connectionFactory,
                                           ErrorHandler errorHandler, EventDispatcher<CubridPartition, TableId> dispatcher,
-                                          Clock clock, CubridDatabaseSchema schema, SnapshotterService snapshotterService) {
+                                          Clock clock, CubridDatabaseSchema schema, SnapshotterService snapshotterService,
+                                          CubridStreamingChangeEventSourceMetrics streamingMetrics) {
         this.configuration = configuration;
         this.connectionFactory = connectionFactory;
         this.errorHandler = errorHandler;
@@ -43,6 +45,7 @@ public class CubridChangeEventSourceFactory implements ChangeEventSourceFactory<
         this.clock = clock;
         this.schema = schema;
         this.snapshotterService = snapshotterService;
+        this.streamingMetrics = streamingMetrics;
     }
 
     @Override
@@ -61,7 +64,7 @@ public class CubridChangeEventSourceFactory implements ChangeEventSourceFactory<
 
     @Override
     public StreamingChangeEventSource<CubridPartition, CubridOffsetContext> getStreamingChangeEventSource() {
-        return new CubridStreamingChangeEventSource(configuration, connectionFactory.mainConnection(), dispatcher, errorHandler, clock, schema);
+        return new CubridStreamingChangeEventSource(configuration, connectionFactory.mainConnection(), dispatcher, errorHandler, clock, schema, streamingMetrics);
     }
 
     @Override

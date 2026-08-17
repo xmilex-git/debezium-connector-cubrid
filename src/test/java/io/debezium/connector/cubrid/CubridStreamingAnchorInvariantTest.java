@@ -21,7 +21,9 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.BufferPolicy;
 import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.StreamState;
+import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.TxnBufferMetrics;
 import io.debezium.connector.cubrid.jna.RawLogItem;
 import io.debezium.relational.TableId;
 
@@ -52,14 +54,15 @@ class CubridStreamingAnchorInvariantTest {
     }
 
     private void runBatch(long batchInLsa, long batchOutLsa, RawLogItem... items) throws InterruptedException {
-        CubridStreamingChangeEventSource.processBatch(state, List.of(items), batchInLsa, batchOutLsa,
+        CubridStreamingChangeEventSource.processBatch(state, BufferPolicy.UNLIMITED, List.of(items), batchInLsa, batchOutLsa,
                 classoid -> TABLE,
                 (lsa, seq) -> {
                     anchorLsa = lsa;
                     anchorSeq = seq;
                 },
                 (buffer, commitDcl) -> buffer.changes.forEach(
-                        c -> published.add(new Published(c.item().transactionId(), c.seq(), anchorLsa, anchorSeq))));
+                        c -> published.add(new Published(c.item().transactionId(), c.seq(), anchorLsa, anchorSeq))),
+                TxnBufferMetrics.NO_OP);
     }
 
     @Test

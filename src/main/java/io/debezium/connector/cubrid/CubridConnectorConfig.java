@@ -99,6 +99,33 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withValidation(Field::isPositiveInteger)
             .withDefault(DEFAULT_CDC_PORT);
 
+    public static final Field TRANSACTION_EVENTS_THRESHOLD = Field.create("transaction.events.threshold")
+            .withDisplayName("Transaction events threshold")
+            .withType(ConfigDef.Type.LONG)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 1))
+            .withWidth(Width.MEDIUM)
+            .withImportance(Importance.MEDIUM)
+            .withDescription("The maximum number of events a single transaction may buffer before the "
+                    + "transaction is abandoned: its buffer is discarded, its remaining events are skipped, "
+                    + "and its changes are permanently lost downstream (recovery requires a re-snapshot). "
+                    + "Use 0 (the default) to buffer transactions of unlimited size (ADR 0007 D2).")
+            .withValidation(Field::isNonNegativeLong)
+            .withDefault(0L);
+
+    public static final Field TRANSACTION_RETENTION_MS = Field.create("transaction.retention.ms")
+            .withDisplayName("Transaction retention (ms)")
+            .withType(ConfigDef.Type.LONG)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 2))
+            .withWidth(Width.MEDIUM)
+            .withImportance(Importance.MEDIUM)
+            .withDescription("The maximum time in milliseconds an in-flight transaction may stay buffered "
+                    + "before it is abandoned and the restart anchor is advanced past it, so a long-running "
+                    + "transaction cannot pin the anchor beyond the supplemental log retention. Abandoned "
+                    + "changes are permanently lost downstream (recovery requires a re-snapshot). "
+                    + "Use 0 (the default) to retain in-flight transactions indefinitely (ADR 0007 D3).")
+            .withValidation(Field::isNonNegativeLong)
+            .withDefault(0L);
+
     public static final Field SNAPSHOT_MODE = Field.create("snapshot.mode")
             .withDisplayName("Snapshot mode")
             .withEnum(SnapshotMode.class, SnapshotMode.INITIAL)
@@ -123,7 +150,9 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
                     DATABASE_NAME,
                     CDC_PORT)
             .connector(
-                    SNAPSHOT_MODE)
+                    SNAPSHOT_MODE,
+                    TRANSACTION_EVENTS_THRESHOLD,
+                    TRANSACTION_RETENTION_MS)
             .events(SOURCE_INFO_STRUCT_MAKER)
             .create();
 
@@ -139,6 +168,8 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
     private final String databaseName;
     private final SnapshotMode snapshotMode;
     private final int cdcPort;
+    private final long transactionEventsThreshold;
+    private final long transactionRetentionMs;
 
     public CubridConnectorConfig(Configuration config) {
         super(
@@ -152,6 +183,18 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
         this.databaseName = config.getString(DATABASE_NAME);
         this.snapshotMode = SnapshotMode.parse(config.getString(SNAPSHOT_MODE), SNAPSHOT_MODE.defaultValueAsString());
         this.cdcPort = config.getInteger(CDC_PORT);
+        this.transactionEventsThreshold = config.getLong(TRANSACTION_EVENTS_THRESHOLD);
+        this.transactionRetentionMs = config.getLong(TRANSACTION_RETENTION_MS);
+    }
+
+    /** Per-transaction buffered-event cap; 0 = unlimited (ADR 0007 D2). */
+    public long getTransactionEventsThreshold() {
+        return transactionEventsThreshold;
+    }
+
+    /** Max in-flight transaction age in ms before abandon; 0 = unlimited (ADR 0007 D3). */
+    public long getTransactionRetentionMs() {
+        return transactionRetentionMs;
     }
 
     public String getDatabaseName() {

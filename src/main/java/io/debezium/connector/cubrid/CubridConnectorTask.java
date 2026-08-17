@@ -27,7 +27,6 @@ import io.debezium.pipeline.ChangeEventSourceCoordinator;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
-import io.debezium.pipeline.metrics.DefaultChangeEventSourceMetricsFactory;
 import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.signal.SignalProcessor;
 import io.debezium.pipeline.spi.Offsets;
@@ -140,13 +139,18 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
                 CubridSchemaFactory.get(),
                 dispatcher::enqueueNotification);
 
+        // the streaming source updates the buffer-policy gauges on the same instance the
+        // coordinator registers as the streaming MBean (ADR 0007, Oracle pattern)
+        final CubridStreamingChangeEventSourceMetrics streamingMetrics = new CubridStreamingChangeEventSourceMetrics(
+                taskContext, queue, metadataProvider);
+
         final ChangeEventSourceCoordinator<CubridPartition, CubridOffsetContext> coordinator = new ChangeEventSourceCoordinator<>(
                 previousOffsets,
                 errorHandler,
                 CubridConnector.class,
                 connectorConfig,
-                new CubridChangeEventSourceFactory(connectorConfig, connectionFactory, errorHandler, dispatcher, clock, schema, snapshotterService),
-                new DefaultChangeEventSourceMetricsFactory<>(),
+                new CubridChangeEventSourceFactory(connectorConfig, connectionFactory, errorHandler, dispatcher, clock, schema, snapshotterService, streamingMetrics),
+                new CubridChangeEventSourceMetricsFactory(streamingMetrics),
                 dispatcher,
                 schema,
                 signalProcessor,
