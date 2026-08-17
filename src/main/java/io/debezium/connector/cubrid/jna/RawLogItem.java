@@ -21,7 +21,7 @@ import java.util.List;
 public final class RawLogItem {
 
     public enum ItemType {
-        DDL, DML, DCL, TIMER, UNKNOWN;
+        DDL, DML, DCL, TIMER, ROLLBACK_TO, UNKNOWN;
 
         static ItemType of(int code) {
             return switch (code) {
@@ -29,6 +29,7 @@ public final class RawLogItem {
                 case 1 -> DML;
                 case 2 -> DCL;
                 case 3 -> TIMER;
+                case 4 -> ROLLBACK_TO;
                 default -> UNKNOWN;
             };
         }
@@ -105,10 +106,14 @@ public final class RawLogItem {
     private final DclType dclType;
     private final long timestamp;
 
+    /* DML: orderable lsa key of the source record; ROLLBACK_TO: rewind target.
+     * Key layout (pageid << 16 | offset) — numeric order == log order. */
+    private final long lsaKey;
+
     RawLogItem(int transactionId, String user, ItemType type,
                int ddlType, int ddlObjectType, String ddlStatement,
                DmlType dmlType, long classoid, List<ColumnValue> changedColumns, List<ColumnValue> condColumns,
-               DclType dclType, long timestamp) {
+               DclType dclType, long timestamp, long lsaKey) {
         this.transactionId = transactionId;
         this.user = user;
         this.type = type;
@@ -121,6 +126,7 @@ public final class RawLogItem {
         this.condColumns = condColumns;
         this.dclType = dclType;
         this.timestamp = timestamp;
+        this.lsaKey = lsaKey;
     }
 
     public int transactionId() {
@@ -171,6 +177,11 @@ public final class RawLogItem {
         return timestamp;
     }
 
+    /** DML: this record's lsa key; ROLLBACK_TO: the rewind target key; 0 otherwise. */
+    public long lsaKey() {
+        return lsaKey;
+    }
+
     public String toDisplayString() {
         StringBuilder sb = new StringBuilder("trid=").append(transactionId).append(" user=").append(user).append(' ').append(type);
         switch (type) {
@@ -178,6 +189,7 @@ public final class RawLogItem {
                     .append(" stmt=").append(ddlStatement);
             case DML -> {
                 sb.append(' ').append(dmlType).append(" classoid=").append(classoid)
+                        .append(" rec_lsa=").append(lsaKey)
                         .append(" changed=").append(changedColumns.size()).append(" cond=").append(condColumns.size());
                 for (ColumnValue c : changedColumns) {
                     sb.append("\n      changed ").append(c.toDisplayString());
@@ -188,6 +200,7 @@ public final class RawLogItem {
             }
             case DCL -> sb.append(' ').append(dclType).append(" ts=").append(timestamp);
             case TIMER -> sb.append(" ts=").append(timestamp);
+            case ROLLBACK_TO -> sb.append(" rollback_to_lsa=").append(lsaKey);
             default -> {
             }
         }

@@ -164,7 +164,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
 
     /**
      * Consumes one extract batch: assigns the deterministic counter, buffers DML per transaction,
-     * publishes on COMMIT and discards on ABORT (ADR 0004). A committing transaction is removed
+     * publishes on COMMIT and discards on ABORT (ADR 0004). A ROLLBACK_TO marker (workspace#47)
+     * rewinds the transaction's buffer: every change whose {@code rec_lsa} key is greater than
+     * the marker's key was undone server-side (savepoint/statement rollback) and is dropped
+     * before it can ever publish. A committing transaction is removed
      * from {@code state.inflight} only <em>after</em> {@code commitSink} returns, so the anchor it
      * emits is bounded by its own start (workspace#45).
      */
@@ -205,6 +208,20 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                         LOGGER.debug("Discarding {} buffered changes of aborted trid {}", buffer.changes.size(), item.transactionId());
                     }
                     state.inflight.remove(item.transactionId());
+                }
+                case ROLLBACK_TO -> {
+                    final TxnBuffer buffer = state.inflight.get(item.transactionId());
+                    if (buffer == null) {
+                        continue; // no captured DML inside the undone range
+                    }
+                    final long rewindKey = item.lsaKey();
+                    final int before = buffer.changes.size();
+                    buffer.changes.removeIf(change -> change.item().lsaKey() > rewindKey);
+                    LOGGER.debug("Rolled back {} of {} buffered changes of trid {} (rewind key {})",
+                            before - buffer.changes.size(), before, item.transactionId(), rewindKey);
+                    if (buffer.changes.isEmpty()) {
+                        state.inflight.remove(item.transactionId());
+                    }
                 }
                 default -> {
                     // DDL — counted for determinism, never emitted (fixed-schema POC)

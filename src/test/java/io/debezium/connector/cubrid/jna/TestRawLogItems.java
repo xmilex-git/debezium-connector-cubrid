@@ -17,26 +17,38 @@ public final class TestRawLogItems {
     }
 
     public static RawLogItem insert(int trid, long classoid) {
+        return insertAt(trid, classoid, 0);
+    }
+
+    /** Insert whose source record carries the given orderable lsa key (pageid << 16 | offset). */
+    public static RawLogItem insertAt(int trid, long classoid, long lsaKey) {
         return new RawLogItem(trid, "dba", RawLogItem.ItemType.DML, 0, 0, null,
                 RawLogItem.DmlType.INSERT, classoid, List.of(), List.of(),
-                RawLogItem.DclType.UNKNOWN, 0);
+                RawLogItem.DclType.UNKNOWN, 0, lsaKey);
+    }
+
+    /** Partial rollback marker: buffered DML of {@code trid} with lsa key {@code > lsaKey} was undone. */
+    public static RawLogItem rollbackTo(int trid, long lsaKey) {
+        return new RawLogItem(trid, "dba", RawLogItem.ItemType.ROLLBACK_TO, 0, 0, null,
+                RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),
+                RawLogItem.DclType.UNKNOWN, 0, lsaKey);
     }
 
     public static RawLogItem commit(int trid) {
         return new RawLogItem(trid, "dba", RawLogItem.ItemType.DCL, 0, 0, null,
                 RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),
-                RawLogItem.DclType.COMMIT, 1_700_000_000L);
+                RawLogItem.DclType.COMMIT, 1_700_000_000L, 0);
     }
 
     public static RawLogItem abort(int trid) {
         return new RawLogItem(trid, "dba", RawLogItem.ItemType.DCL, 0, 0, null,
                 RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),
-                RawLogItem.DclType.ABORT, 1_700_000_000L);
+                RawLogItem.DclType.ABORT, 1_700_000_000L, 0);
     }
 
     public static RawLogItem timer() {
         return new RawLogItem(-1, null, RawLogItem.ItemType.TIMER, 0, 0, null,
                 RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),
-                RawLogItem.DclType.UNKNOWN, 1_700_000_000L);
+                RawLogItem.DclType.UNKNOWN, 1_700_000_000L, 0);
     }
 }
