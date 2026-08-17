@@ -8,6 +8,8 @@ package io.debezium.connector.cubrid;
 import static io.debezium.connector.cubrid.jna.TestRawLogItems.abort;
 import static io.debezium.connector.cubrid.jna.TestRawLogItems.commit;
 import static io.debezium.connector.cubrid.jna.TestRawLogItems.insert;
+import static io.debezium.connector.cubrid.jna.TestRawLogItems.insertAt;
+import static io.debezium.connector.cubrid.jna.TestRawLogItems.rollbackTo;
 import static io.debezium.connector.cubrid.jna.TestRawLogItems.timer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -107,6 +109,56 @@ class CubridStreamingAnchorInvariantTest {
                     "record of trid " + p.trid() + " carried anchor seq " + p.anchorSeq()
                             + " past its transaction start " + startSeqByTrid.get(p.trid()));
         }
+    }
+
+    @Test
+    void rollbackToDropsOnlyChangesInsideTheUndoneRange() throws InterruptedException {
+        // T1: DML @key 10, DML @key 20, then ROLLBACK_TO key 10 (statement/savepoint rollback),
+        // then DML @key 30, COMMIT — only keys 10 and 30 survive (workspace#47)
+        runBatch(100, 200,
+                insertAt(1, CLASSOID, 10),
+                insertAt(1, CLASSOID, 20),
+                rollbackTo(1, 10),
+                insertAt(1, CLASSOID, 30),
+                commit(1));
+
+        assertEquals(2, published.size());
+        assertEquals(1, published.get(0).seq()); // key 10 (counter 1)
+        assertEquals(4, published.get(1).seq()); // key 30 (counter 4; key-20 DML and marker consumed 2..3)
+    }
+
+    @Test
+    void rollbackToWholeTransactionLeavesNothingToPublish() throws InterruptedException {
+        // the undone range covers every buffered change (e.g. failed statement was the only one);
+        // the emptied buffer releases the anchor like an ABORT does
+        runBatch(100, 200, insertAt(1, CLASSOID, 10), rollbackTo(1, 5), commit(1));
+
+        assertTrue(published.isEmpty());
+        assertEquals(200, anchorLsa);
+        assertEquals(3, anchorSeq);
+    }
+
+    @Test
+    void repeatedRollbackToSameSavepointIsIdempotent() throws InterruptedException {
+        runBatch(100, 200,
+                insertAt(1, CLASSOID, 10),
+                insertAt(1, CLASSOID, 20),
+                rollbackTo(1, 10),
+                rollbackTo(1, 10),
+                insertAt(1, CLASSOID, 30),
+                commit(1));
+
+        assertEquals(2, published.size());
+    }
+
+    @Test
+    void rollbackToOfUnbufferedTridIsIgnored() throws InterruptedException {
+        // internal server aborts of transactions that never produced captured DML arrive as
+        // markers with no buffer — they must be a no-op
+        runBatch(100, 200, rollbackTo(9, 10), insert(1, CLASSOID), commit(1));
+
+        assertEquals(1, published.size());
+        assertEquals(1, published.get(0).trid());
     }
 
     @Test

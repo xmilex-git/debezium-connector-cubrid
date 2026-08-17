@@ -140,6 +140,7 @@ public class CubridLogClient {
         List<ColumnValue> cond = List.of();
         RawLogItem.DclType dclType = RawLogItem.DclType.UNKNOWN;
         long timestamp = 0;
+        long lsaKey = 0;
 
         switch (type) {
             case DDL -> {
@@ -157,6 +158,7 @@ public class CubridLogClient {
                 CubridLogItemStruct.DmlStruct dml = node.data_item.dml;
                 dmlType = RawLogItem.DmlType.of(dml.dml_type);
                 classoid = dml.classoid;
+                lsaKey = dml.rec_lsa;
                 changed = copyColumns(dml.num_changed_column, dml.changed_column_index, dml.changed_column_data,
                         dml.changed_column_data_len);
                 cond = copyColumns(dml.num_cond_column, dml.cond_column_index, dml.cond_column_data,
@@ -173,13 +175,18 @@ public class CubridLogClient {
                 node.data_item.read();
                 timestamp = node.data_item.timer.timestamp;
             }
+            case ROLLBACK_TO -> {
+                node.data_item.setType(CubridLogItemStruct.RollbackToStruct.class);
+                node.data_item.read();
+                lsaKey = node.data_item.rollback_to.lsa;
+            }
             default -> {
             }
         }
         return new RawLogItem(node.transaction_id, user, type,
                 ddlType, ddlObjectType, ddlStatement,
                 dmlType, classoid, changed, cond,
-                dclType, timestamp);
+                dclType, timestamp, lsaKey);
     }
 
     private static List<ColumnValue> copyColumns(int n, Pointer indexArr, Pointer dataArr, Pointer lenArr) {
