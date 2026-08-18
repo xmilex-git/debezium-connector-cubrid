@@ -33,8 +33,10 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     private final LinkedHashSet<String> abandonedTransactionIds = new LinkedHashSet<>();
     private final AtomicLong ddlHalts = new AtomicLong();
     private final AtomicLong midStreamCreateTables = new AtomicLong();
+    private final AtomicLong haHalts = new AtomicLong();
     private volatile String lastDdlHaltTable = "";
     private volatile String lastDdlHaltStatement = "";
+    private volatile String lastHaHaltReason = "";
 
     public <T extends CdcSourceTaskContext> CubridStreamingChangeEventSourceMetrics(T taskContext,
                                                                                     ChangeEventQueueMetrics changeEventQueueMetrics,
@@ -131,6 +133,22 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     }
 
     @Override
+    public void onHaHalt(String reason) {
+        haHalts.incrementAndGet();
+        lastHaHaltReason = reason == null ? "" : reason;
+    }
+
+    @Override
+    public long getHaHaltCount() {
+        return haHalts.get();
+    }
+
+    @Override
+    public String getLastHaHaltReason() {
+        return lastHaHaltReason;
+    }
+
+    @Override
     public void reset() {
         super.reset();
         activeTransactions.set(0);
@@ -139,8 +157,10 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
         oldestInflightAgeMs.set(0);
         ddlHalts.set(0);
         midStreamCreateTables.set(0);
+        haHalts.set(0);
         lastDdlHaltTable = "";
         lastDdlHaltStatement = "";
+        lastHaHaltReason = "";
         synchronized (abandonedTransactionIds) {
             abandonedTransactionIds.clear();
         }

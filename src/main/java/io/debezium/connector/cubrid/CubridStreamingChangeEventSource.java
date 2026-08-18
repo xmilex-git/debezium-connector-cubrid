@@ -140,6 +140,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         /** A mid-stream CREATE TABLE was observed and skipped (ADR 0008 D3). */
         default void onMidStreamCreateTable(String statement) {
         }
+
+        /** The HA halt guard fired (ADR 0010 D2); the task is about to fail. */
+        default void onHaHalt(String reason) {
+        }
     }
 
     /** Receives anchor advances; the production sink is {@link CubridOffsetContext#setAnchor}. */
@@ -173,6 +177,26 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     public void execute(ChangeEventSourceContext context, CubridPartition partition, CubridOffsetContext offsetContext) throws InterruptedException {
         final CubridLogClient client = new CubridLogClient();
         try {
+            // HA halt guard (ADR 0010 D2): before touching the log, verify the node just
+            // connected to is the one the stored offset belongs to (path A) and that it is in a
+            // capturable HA state (path B). Fails closed when the node facts are unreadable —
+            // SHOW LOG HEADER is DBA-only, so a silent skip would gut the guard.
+            final CubridConnection.HaNodeInfo nodeInfo;
+            try {
+                nodeInfo = connection.readHaNodeInfo();
+            }
+            catch (java.sql.SQLException e) {
+                throw new io.debezium.DebeziumException(
+                        "HA halt guard (ADR 0010 D2) could not read the node state via SHOW LOG HEADER — "
+                                + "the statement is DBA-only, so the connector's JDBC user must be in the DBA group",
+                        e);
+            }
+            offsetContext.setSourceNode(HaNodeGuard.verifyAndStamp(
+                    offsetContext.getSourceNode(),
+                    HaNodeGuard.identity(connectorConfig.getJdbcConfig().getHostname(), nodeInfo.dbCreationMillis()),
+                    nodeInfo.haServerState(),
+                    metrics::onHaHalt));
+
             final Map<Long, TableId> tableByClassoid = readClassOidTableIds();
 
             client.setAllInCond(true);

@@ -44,4 +44,10 @@ public interface CubridStreamingChangeEventSourceMetricsMXBean extends Streaming
 
     /** Number of mid-stream CREATE TABLE items observed and skipped (ADR 0008 D3). */
     long getMidStreamCreateTableCount();
+
+    /** Number of HA halts fired (ADR 0010 D2); each one fails the task. */
+    long getHaHaltCount();
+
+    /** Message of the most recent HA halt; empty when none fired. */
+    String getLastHaHaltReason();
 }

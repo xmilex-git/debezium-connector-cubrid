@@ -144,6 +144,26 @@ public class CubridConnection extends JdbcConnection {
         return tableIds;
     }
 
+    /** The HA-relevant node facts read from {@code SHOW LOG HEADER} (ADR 0010 D2). */
+    public record HaNodeInfo(String haServerState, long dbCreationMillis) {
+    }
+
+    /**
+     * Reads the connected node's HA server state and database creation time from the active log
+     * header. {@code SHOW LOG HEADER} is DBA-only in the engine ({@code show_meta.c}), so the
+     * connector's JDBC user must be in the DBA group for the HA halt guard to run — the guard
+     * fails closed with a pointed message otherwise (ADR 0010 D2).
+     */
+    public HaNodeInfo readHaNodeInfo() throws SQLException {
+        try (java.sql.Statement stmt = connection().createStatement();
+                ResultSet rs = stmt.executeQuery("SHOW LOG HEADER")) {
+            if (!rs.next()) {
+                throw new SQLException("SHOW LOG HEADER returned no rows");
+            }
+            return new HaNodeInfo(rs.getString("Ha_server_state"), rs.getTimestamp("Creation_time").getTime());
+        }
+    }
+
     /**
      * Maps the {@code classoid} carried by every {@code cubrid_log} DML item to its table name.
      * <p>

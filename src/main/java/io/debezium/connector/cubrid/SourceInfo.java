@@ -23,6 +23,8 @@ public class SourceInfo extends BaseSourceInfo {
     public static final String LSA_OFFSET_KEY = "lsa_offset";
     public static final String SEQ_KEY = "seq";
     public static final String EPOCH_KEY = "epoch";
+    /** Offset-only key: the source node identity of the HA halt guard (ADR 0010 D2), not part of the event {@code source} struct. */
+    public static final String NODE_KEY = "node";
     public static final String TX_ID_KEY = "tx_id";
 
     private long pageId = -1L;

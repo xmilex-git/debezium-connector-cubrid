@@ -77,6 +77,13 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
 
     @Override
     protected void connectionCreated(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> snapshotContext) throws Exception {
+        // HA halt guard, state axis only (ADR 0010 D2-2): never snapshot a non-master — a
+        // standby's data plus a later stream would mix two nodes' histories. The identity axis
+        // needs a stored offset to compare against, so it lives in the streaming source, which
+        // stamps the identity on its first run after this snapshot.
+        HaNodeGuard.assertCapturableState(connection.readHaNodeInfo().haServerState(), reason -> {
+        });
+
         // The consistency mechanism of the online snapshot (ADR 0009 D1): a REPEATABLE READ
         // multi-statement view. Known constraints (documented, ADR 0009 D2): the RR reader
         // blocks DDL for the duration of the scan, and large tables prolong that window.

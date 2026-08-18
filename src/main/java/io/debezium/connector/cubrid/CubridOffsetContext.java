@@ -43,6 +43,8 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
 
     private Lsa anchorLsa;
     private long anchorSeq;
+    // source node identity of the HA halt guard (ADR 0010 D2); null until first stamped
+    private String sourceNode;
 
     public CubridOffsetContext(CubridConnectorConfig connectorConfig, Lsa lsa, long seq, int epoch,
                                boolean snapshot, boolean snapshotCompleted,
@@ -79,17 +81,33 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
     @Override
     public Map<String, ?> getOffset() {
         if (sourceInfo.isSnapshot()) {
-            return Collect.hashMapOf(
+            return withSourceNode(Collect.hashMapOf(
                     SourceInfo.SNAPSHOT_KEY, true,
                     SNAPSHOT_COMPLETED_KEY, snapshotCompleted,
                     SourceInfo.PAGE_ID_KEY, anchorLsa.pageId(),
-                    SourceInfo.LSA_OFFSET_KEY, anchorLsa.offset());
+                    SourceInfo.LSA_OFFSET_KEY, anchorLsa.offset()));
         }
-        return incrementalSnapshotContext.store(transactionContext.store(Collect.hashMapOf(
+        return incrementalSnapshotContext.store(transactionContext.store(withSourceNode(Collect.hashMapOf(
                 SourceInfo.PAGE_ID_KEY, anchorLsa.pageId(),
                 SourceInfo.LSA_OFFSET_KEY, anchorLsa.offset(),
                 SourceInfo.SEQ_KEY, anchorSeq,
-                SourceInfo.EPOCH_KEY, (long) sourceInfo.getEpoch())));
+                SourceInfo.EPOCH_KEY, (long) sourceInfo.getEpoch()))));
+    }
+
+    private Map<String, Object> withSourceNode(Map<String, Object> offset) {
+        if (sourceNode != null) {
+            offset.put(SourceInfo.NODE_KEY, sourceNode);
+        }
+        return offset;
+    }
+
+    /** The node identity the offset was written against (ADR 0010 D2); null until first stamped. */
+    public String getSourceNode() {
+        return sourceNode;
+    }
+
+    public void setSourceNode(String sourceNode) {
+        this.sourceNode = sourceNode;
     }
 
     @Override
@@ -191,9 +209,11 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
             final boolean snapshot = Boolean.TRUE.equals(offset.get(SourceInfo.SNAPSHOT_KEY));
             final boolean snapshotCompleted = Boolean.TRUE.equals(offset.get(SNAPSHOT_COMPLETED_KEY));
 
-            return new CubridOffsetContext(connectorConfig, new Lsa(pageId, lsaOffset), seq, (int) epoch,
+            final CubridOffsetContext context = new CubridOffsetContext(connectorConfig, new Lsa(pageId, lsaOffset), seq, (int) epoch,
                     snapshot, snapshotCompleted,
                     TransactionContext.load(offset), SignalBasedIncrementalSnapshotContext.load(offset, false));
+            context.setSourceNode((String) offset.get(SourceInfo.NODE_KEY));
+            return context;
         }
     }
 }
