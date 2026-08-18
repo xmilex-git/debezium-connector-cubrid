@@ -142,18 +142,18 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     private static final ConfigDefinition CONFIG_DEFINITION = RelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
             .name("CUBRID")
-            .type(
+            .group(Field.Group.CONNECTION,
                     HOSTNAME,
                     PORT,
                     USER,
                     PASSWORD,
                     DATABASE_NAME,
                     CDC_PORT)
-            .connector(
+            .group(Field.Group.CONNECTOR,
                     SNAPSHOT_MODE,
                     TRANSACTION_EVENTS_THRESHOLD,
                     TRANSACTION_RETENTION_MS)
-            .events(SOURCE_INFO_STRUCT_MAKER)
+            .group(Field.Group.CONNECTOR_ADVANCED, SOURCE_INFO_STRUCT_MAKER)
             .create();
 
     protected static ConfigDef configDef() {

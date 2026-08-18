@@ -8,6 +8,7 @@ package io.debezium.connector.cubrid;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import org.apache.kafka.connect.source.SourceRecord;
@@ -20,7 +21,10 @@ import io.debezium.config.Configuration;
 import io.debezium.config.Field;
 import io.debezium.connector.base.ChangeEventQueue;
 import io.debezium.connector.common.BaseSourceTask;
+import io.debezium.connector.common.CdcSourceTaskContext;
+import io.debezium.connector.common.DebeziumHeaderProducer;
 import io.debezium.document.DocumentReader;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.jdbc.DefaultMainConnectionProvidingConnectionFactory;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
@@ -45,6 +49,7 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
 
     private static final String CONTEXT_NAME = "cubrid-connector-task";
 
+    private volatile CubridConnectorConfig connectorConfig;
     private volatile CubridTaskContext taskContext;
     private volatile ChangeEventQueue<DataChangeEvent> queue;
     private volatile CubridConnection dataConnection;
@@ -57,8 +62,20 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
     }
 
     @Override
+    protected String connectorName() {
+        return Module.name();
+    }
+
+    @Override
+    public CdcSourceTaskContext<CubridConnectorConfig> preStart(Configuration config) {
+        connectorConfig = new CubridConnectorConfig(config);
+        taskContext = new CubridTaskContext(config, connectorConfig);
+        return taskContext;
+    }
+
+    @Override
     protected ChangeEventSourceCoordinator<CubridPartition, CubridOffsetContext> start(Configuration config) {
-        final CubridConnectorConfig connectorConfig = new CubridConnectorConfig(config);
+        final CubridConnectorConfig connectorConfig = this.connectorConfig;
         final TopicNamingStrategy<TableId> topicNamingStrategy = connectorConfig.getTopicNamingStrategy(CommonConnectorConfig.TOPIC_NAMING_STRATEGY);
         final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
 
@@ -66,9 +83,12 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
                 () -> new CubridConnection(connectorConfig.getJdbcConfig()));
         dataConnection = connectionFactory.mainConnection();
 
+        registerServiceProviders(connectorConfig.getServiceRegistry());
+
+        final CustomConverterRegistry customConverterRegistry = connectorConfig.getServiceRegistry().tryGetService(CustomConverterRegistry.class);
         final CubridValueConverters valueConverters = new CubridValueConverters(connectorConfig.getDecimalMode(),
                 connectorConfig.getTemporalPrecisionMode(), connectorConfig.binaryHandlingMode());
-        schema = new CubridDatabaseSchema(connectorConfig, topicNamingStrategy, valueConverters);
+        schema = new CubridDatabaseSchema(connectorConfig, topicNamingStrategy, valueConverters, customConverterRegistry, taskContext);
 
         final Offsets<CubridPartition, CubridOffsetContext> previousOffsets = getPreviousOffsets(
                 new CubridPartition.Provider(connectorConfig),
@@ -94,12 +114,9 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
         connectorConfig.getBeanRegistry().add(StandardBeanNames.JDBC_CONNECTION, dataConnection);
         connectorConfig.getBeanRegistry().add(StandardBeanNames.VALUE_CONVERTER, valueConverters);
         connectorConfig.getBeanRegistry().add(StandardBeanNames.OFFSETS, previousOffsets);
-
-        registerServiceProviders(connectorConfig.getServiceRegistry());
+        connectorConfig.getBeanRegistry().add(StandardBeanNames.CDC_SOURCE_TASK_CONTEXT, taskContext);
 
         final SnapshotterService snapshotterService = connectorConfig.getServiceRegistry().tryGetService(SnapshotterService.class);
-
-        taskContext = new CubridTaskContext(connectorConfig, schema);
 
         final Clock clock = Clock.system();
 
@@ -131,7 +148,8 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
                 DataChangeEvent::new,
                 metadataProvider,
                 schemaNameAdjuster,
-                signalProcessor);
+                signalProcessor,
+                connectorConfig.getServiceRegistry().tryGetService(DebeziumHeaderProducer.class));
 
         final NotificationService<CubridPartition, CubridOffsetContext> notificationService = new NotificationService<>(
                 getNotificationChannels(),
@@ -142,7 +160,7 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
         // the streaming source updates the buffer-policy gauges on the same instance the
         // coordinator registers as the streaming MBean (ADR 0007, Oracle pattern)
         final CubridStreamingChangeEventSourceMetrics streamingMetrics = new CubridStreamingChangeEventSourceMetrics(
-                taskContext, queue, metadataProvider);
+                taskContext, queue, metadataProvider, schema::dataCollectionIds);
 
         final ChangeEventSourceCoordinator<CubridPartition, CubridOffsetContext> coordinator = new ChangeEventSourceCoordinator<>(
                 previousOffsets,
@@ -167,6 +185,11 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
         return queue.poll().stream()
                 .map(DataChangeEvent::getRecord)
                 .collect(Collectors.toList());
+    }
+
+    @Override
+    protected Optional<ErrorHandler> getErrorHandler() {
+        return Optional.ofNullable(errorHandler);
     }
 
     @Override

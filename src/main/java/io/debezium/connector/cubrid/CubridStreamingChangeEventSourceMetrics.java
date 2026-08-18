@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.debezium.connector.base.ChangeEventQueueMetrics;
 import io.debezium.connector.common.CdcSourceTaskContext;
+import io.debezium.pipeline.metrics.CapturedTablesSupplier;
 import io.debezium.pipeline.metrics.DefaultStreamingChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 
@@ -33,8 +34,9 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
 
     public <T extends CdcSourceTaskContext> CubridStreamingChangeEventSourceMetrics(T taskContext,
                                                                                     ChangeEventQueueMetrics changeEventQueueMetrics,
-                                                                                    EventMetadataProvider metadataProvider) {
-        super(taskContext, changeEventQueueMetrics, metadataProvider);
+                                                                                    EventMetadataProvider metadataProvider,
+                                                                                    CapturedTablesSupplier capturedTablesSupplier) {
+        super(taskContext, changeEventQueueMetrics, metadataProvider, capturedTablesSupplier);
     }
 
     @Override

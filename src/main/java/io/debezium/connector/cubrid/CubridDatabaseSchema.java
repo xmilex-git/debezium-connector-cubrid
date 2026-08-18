@@ -6,6 +6,7 @@
 package io.debezium.connector.cubrid;
 
 import io.debezium.annotation.NotThreadSafe;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.RelationalDatabaseSchema;
 import io.debezium.relational.TableId;
 import io.debezium.relational.TableSchemaBuilder;
@@ -22,7 +23,8 @@ import io.debezium.spi.topic.TopicNamingStrategy;
 public class CubridDatabaseSchema extends RelationalDatabaseSchema {
 
     public CubridDatabaseSchema(CubridConnectorConfig connectorConfig, TopicNamingStrategy<TableId> topicNamingStrategy,
-                                CubridValueConverters valueConverters) {
+                                CubridValueConverters valueConverters, CustomConverterRegistry customConverterRegistry,
+                                CubridTaskContext taskContext) {
         super(
                 connectorConfig,
                 topicNamingStrategy,
@@ -32,12 +34,14 @@ public class CubridDatabaseSchema extends RelationalDatabaseSchema {
                         valueConverters,
                         new CubridDefaultValueConverter(),
                         connectorConfig.schemaNameAdjuster(),
-                        connectorConfig.customConverterRegistry(),
+                        customConverterRegistry,
                         connectorConfig.getSourceInfoStructMaker().schema(),
                         connectorConfig.getFieldNamer(),
-                        false),
+                        false,
+                        connectorConfig.getEventConvertingFailureHandlingMode()),
                 false,
-                connectorConfig.getKeyMapper());
+                connectorConfig.getKeyMapper(),
+                taskContext);
     }
 
     @Override

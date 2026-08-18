@@ -91,15 +91,4 @@ public class CubridConnector extends RelationalBaseSourceConnector {
         return config.validate(CubridConnectorConfig.ALL_FIELDS);
     }
 
-    @SuppressWarnings("unchecked")
-    @Override
-    public List<TableId> getMatchingCollections(Configuration config) {
-        CubridConnectorConfig connectorConfig = new CubridConnectorConfig(config);
-        try (CubridConnection connection = new CubridConnection(connectorConfig.getJdbcConfig())) {
-            return new ArrayList<>(connection.readAllTableNames(new String[]{ "TABLE" }));
-        }
-        catch (SQLException e) {
-            throw new DebeziumException(e);
-        }
-    }
 }

@@ -131,7 +131,6 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
         sourceInfo.setTxId(txId);
     }
 
-    @Override
     public boolean isSnapshotRunning() {
         return sourceInfo.isSnapshot() && !snapshotCompleted;
     }
@@ -141,7 +140,7 @@ public class CubridOffsetContext extends CommonOffsetContext<SourceInfo> {
     }
 
     @Override
-    public void preSnapshotStart() {
+    public void preSnapshotStart(boolean onDemand) {
         sourceInfo.setSnapshot(SnapshotRecord.TRUE);
         snapshotCompleted = false;
     }
