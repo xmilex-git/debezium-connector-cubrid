@@ -53,6 +53,11 @@ public final class TestRawLogItems {
                 RawLogItem.DclType.ABORT, 1_700_000_000L, 0);
     }
 
+    /** CDC_RELATION dictionary announce (ADR 0011 D4); empty owner+table = dropped class. */
+    public static RawLogItem relation(long classoid, String owner, String table) {
+        return RawLogItem.relation(-1, "dba", classoid, owner, table);
+    }
+
     public static RawLogItem timer() {
         return new RawLogItem(-1, null, RawLogItem.ItemType.TIMER, 0, 0, null,
                 RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),

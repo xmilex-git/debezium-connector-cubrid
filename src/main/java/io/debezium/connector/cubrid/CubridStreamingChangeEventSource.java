@@ -7,6 +7,7 @@ package io.debezium.connector.cubrid;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -91,6 +92,11 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         // trids abandoned by the buffer policy (ADR 0007) whose later items must be skipped;
         // an entry is dropped when the transaction's terminal DCL arrives (trids are reused)
         final Set<Integer> abandoned = new HashSet<>();
+        // classoid -> owner.table from CDC_RELATION announces (ADR 0011 D4). Session-scoped by
+        // design: the state is rebuilt from the stream after every (re)connect and never
+        // persisted; the server re-announces per session. An empty-name announce (class already
+        // dropped server-side) maps the classoid to null = known but unroutable.
+        final Map<Long, TableId> relationDictionary = new HashMap<>();
         long counter;
 
         StreamState(long counter) {
@@ -176,32 +182,13 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     public void execute(ChangeEventSourceContext context, CubridPartition partition, CubridOffsetContext offsetContext) throws InterruptedException {
         final CubridLogClient client = new CubridLogClient();
         try {
-            // HA halt guard (ADR 0010 D2): before touching the log, verify the node just
-            // connected to is the one the stored offset belongs to (path A) and that it is in a
-            // capturable HA state (path B). Fails closed when the node facts are unreadable —
-            // SHOW LOG HEADER is DBA-only, so a silent skip would gut the guard.
-            final CubridConnection.HaNodeInfo nodeInfo;
-            try {
-                nodeInfo = connection.readHaNodeInfo();
-            }
-            catch (java.sql.SQLException e) {
-                throw new io.debezium.DebeziumException(
-                        "HA halt guard (ADR 0010 D2) could not read the node state via SHOW LOG HEADER — "
-                                + "the statement is DBA-only, so the connector's JDBC user must be in the DBA group",
-                        e);
-            }
-            offsetContext.setSourceNode(HaNodeGuard.verifyAndStamp(
-                    offsetContext.getSourceNode(),
-                    HaNodeGuard.identity(connectorConfig.getJdbcConfig().getHostname(), nodeInfo.dbCreationMillis()),
-                    nodeInfo.haServerState(),
-                    metrics::onHaHalt));
-
-            final Map<Long, TableId> tableByClassoid = readClassOidTableIds();
-
             client.setAllInCond(true);
-            // the C client's db_login() authorization pass, reproduced over JDBC (#68 → #72);
-            // no extraction table names are set yet (#70), so this requires a DBA-group
-            // account — the same requirement the C client enforced for a full-log session
+            // name-based extraction (ADR 0011 D3/D5): the server resolves the configured
+            // owner.table names, scopes both delivery and the relation dictionary to them,
+            // and the JDBC gate below checks per-table SELECT on the same list — a non-DBA
+            // account with those grants is sufficient (workspace#70)
+            client.setExtractionTableNames(connectorConfig.getExtractionTableNames());
+            // the C client's db_login() authorization pass, reproduced over JDBC (#68 → #72)
             client.setAuthorizationGate(CubridCdcAuthorization.gate(connection));
             client.connect(
                     connectorConfig.getJdbcConfig().getHostname(),
@@ -209,6 +196,19 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                     connectorConfig.getDatabaseName(),
                     connectorConfig.getJdbcConfig().getUser(),
                     connectorConfig.getJdbcConfig().getPassword());
+
+            // HA halt guard (ADR 0010 D2): before touching the log, verify the node just
+            // connected to is the one the stored offset belongs to (path A) and that it is in
+            // a capturable HA state (path B). The facts arrive in-band in the START_SESSION
+            // reply (workspace#70) — no DBA-only SHOW LOG HEADER, and they describe the very
+            // server the log stream comes from. Fails closed: an old server without facts is
+            // rejected inside connect().
+            final CubridLogClient.NodeFacts nodeFacts = client.nodeFacts();
+            offsetContext.setSourceNode(HaNodeGuard.verifyAndStamp(
+                    offsetContext.getSourceNode(),
+                    HaNodeGuard.identity(connectorConfig.getJdbcConfig().getHostname(), nodeFacts.dbCreationSeconds() * 1000L),
+                    nodeFacts.haServerState(),
+                    metrics::onHaHalt));
 
             long cursor;
             long counter;
@@ -250,10 +250,7 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                 cursor = batch.lsaOut();
 
                 processBatch(state, policy, batch.items(), batchInLsaRaw, cursor,
-                        classoid -> {
-                            final TableId tableId = tableByClassoid.get(classoid);
-                            return tableId != null && schema.tableFor(tableId) != null ? tableId : null;
-                        },
+                        tableId -> schema.tableFor(tableId) != null,
                         (lsaRaw, seq) -> offsetContext.setAnchor(Lsa.fromRaw(lsaRaw), seq),
                         (buffer, commitDcl) -> publishTransaction(partition, offsetContext, buffer, commitDcl),
                         metrics);
@@ -298,7 +295,7 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
      * restart deterministically re-halts. Mid-stream CREATE TABLE only warns (D3).
      */
     static void processBatch(StreamState state, BufferPolicy policy, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
-                             java.util.function.LongFunction<TableId> capturedTableFor,
+                             java.util.function.Predicate<TableId> captured,
                              AnchorSink anchorSink, CommitSink commitSink, TxnBufferMetrics metrics)
             throws InterruptedException {
         final long batchStartCounter = state.counter;
@@ -307,6 +304,21 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             if (item.type() == RawLogItem.ItemType.TIMER) {
                 continue; // not counted (ADR 0004) — batch-level heartbeat advances the offset
             }
+            if (item.type() == RawLogItem.ItemType.RELATION) {
+                // NOT counted, exactly like TIMER (ADR 0011 D6): a dictionary announce is a
+                // session event re-sent after every reconnect, not derived from a log position —
+                // counting it would give the same row event a different counter (= _version) on
+                // replay and void the #41 RMT convergence proof. It also bypasses the transaction
+                // buffer: it belongs to no transaction and must survive an ADR 0007 abandon.
+                // Contrast ROLLBACK_TO (#47), which IS position-derived and deterministic on
+                // replay, so it stays counted.
+                state.relationDictionary.put(item.classoid(),
+                        item.relationOwner().isEmpty() && item.relationTable().isEmpty()
+                                ? null // announced but already dropped server-side — known, unroutable
+                                : new TableId(null, item.relationOwner().toLowerCase(java.util.Locale.ROOT),
+                                        item.relationTable().toLowerCase(java.util.Locale.ROOT)));
+                continue;
+            }
             state.counter++;
 
             switch (item.type()) {
@@ -314,9 +326,22 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                     if (state.abandoned.contains(item.transactionId())) {
                         continue; // counted for determinism, but the transaction was abandoned (ADR 0007)
                     }
-                    final TableId tableId = capturedTableFor.apply(item.classoid());
-                    if (tableId == null) {
-                        continue; // not captured — counted but never buffered/published
+                    if (!state.relationDictionary.containsKey(item.classoid())) {
+                        // the server filters delivery to the extraction targets and announces each
+                        // target's dictionary entry before its first use (workspace#67), so a DML
+                        // without an entry is a protocol-contract breach. A restart opens a fresh
+                        // session whose dictionary is re-sent from the anchor, which heals a
+                        // transient miss; a persistent failure means engine/connector version skew
+                        // (ADR 0011 D10 — no _db_class fallback).
+                        throw new io.debezium.DebeziumException(
+                                "CDC stream delivered a DML item for classoid " + item.classoid()
+                                        + " without a preceding relation dictionary announce (ADR 0011 D4). "
+                                        + "Restart the connector; if this persists, the engine and connector "
+                                        + "releases do not match (ADR 0011 D10).");
+                    }
+                    final TableId tableId = state.relationDictionary.get(item.classoid());
+                    if (tableId == null || !captured.test(tableId)) {
+                        continue; // announced but dropped server-side, or not in the schema — counted, never buffered
                     }
                     final TxnBuffer buffer = state.inflight.computeIfAbsent(item.transactionId(),
                             trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter, policy.nowMs().getAsLong()));
@@ -376,8 +401,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                                 + "the documented restart+snapshot procedure (ADR 0008 D3): {}", item.ddlStatement());
                         continue;
                     }
-                    final TableId tableId = capturedTableFor.apply(item.classoid());
-                    if (tableId == null) {
+                    // a DDL may legitimately arrive without an announce (e.g. a NULL-classoid
+                    // statement); only an announced, schema-known table triggers the halt
+                    final TableId tableId = state.relationDictionary.get(item.classoid());
+                    if (tableId == null || !captured.test(tableId)) {
                         continue; // not a captured table (ADR 0008 D1)
                     }
                     // ALTER/DROP/RENAME/TRUNCATE — and, fail-safe, any unknown future ddl_type
@@ -465,9 +492,4 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         }
     }
 
-    private Map<Long, TableId> readClassOidTableIds() throws Exception {
-        final Map<Long, TableId> result = connection.readClassOidTableIds();
-        LOGGER.info("Resolved {} classoid -> table mappings from _db_class", result.size());
-        return result;
-    }
 }

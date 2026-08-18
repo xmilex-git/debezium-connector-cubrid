@@ -88,8 +88,9 @@ class CubridDdlHaltTest {
     }
 
     private void runBatch(long batchInLsa, long batchOutLsa, RawLogItem... items) throws InterruptedException {
+        state.relationDictionary.putIfAbsent(CAPTURED_CLASSOID, TABLE); // pre-seeded announce (ADR 0011 D4)
         CubridStreamingChangeEventSource.processBatch(state, BufferPolicy.UNLIMITED, List.of(items), batchInLsa, batchOutLsa,
-                classoid -> classoid == CAPTURED_CLASSOID ? TABLE : null,
+                tableId -> TABLE.equals(tableId),
                 (lsa, seq) -> {
                     anchorLsa = lsa;
                     anchorSeq = seq;

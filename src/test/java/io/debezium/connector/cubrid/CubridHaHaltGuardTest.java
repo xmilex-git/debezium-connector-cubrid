@@ -35,6 +35,7 @@ class CubridHaHaltGuardTest {
         return new CubridConnectorConfig(Configuration.create()
                 .with("topic.prefix", "htapcdc")
                 .with("database.dbname", "htapdb")
+                .with("table.include.list", "dba.t_order,dba.t_item")
                 .build());
     }
 

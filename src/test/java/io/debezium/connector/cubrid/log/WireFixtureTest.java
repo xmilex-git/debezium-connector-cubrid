@@ -212,8 +212,17 @@ class WireFixtureTest {
         assertTrue(all.stream().anyMatch(it -> it.type() == RawLogItem.ItemType.DCL
                 && it.dclType() == RawLogItem.DclType.COMMIT && it.timestamp() > 1_700_000_000L));
         assertTrue(all.stream().anyMatch(it -> it.type() == RawLogItem.ItemType.TIMER && it.timestamp() > 1_700_000_000L));
-        // RELATION items (workspace#67) are consumed structurally — surfaced in #70
-        assertTrue(all.stream().anyMatch(it -> it.type() == RawLogItem.ItemType.UNKNOWN));
+        // RELATION dictionary announces (workspace#67) surface owner/table split by the
+        // engine (workspace#70) and carry the classoid their DML items are routed by
+        RawLogItem orderRelation = all.stream()
+                .filter(it -> it.type() == RawLogItem.ItemType.RELATION)
+                .filter(it -> "t_order".equals(it.relationTable()))
+                .findFirst().orElseThrow();
+        assertEquals("dba", orderRelation.relationOwner());
+        assertEquals(orderRelation.classoid(), insert990022.classoid(),
+                "the announce precedes its classoid's first DML and routes it (ADR 0011 D4)");
+        assertTrue(all.stream().anyMatch(it -> it.type() == RawLogItem.ItemType.RELATION
+                && "t_item".equals(it.relationTable())));
     }
 
     @Test

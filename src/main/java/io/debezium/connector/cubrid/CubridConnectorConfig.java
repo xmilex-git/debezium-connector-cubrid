@@ -181,6 +181,14 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
      */
     public static final Field.Set ALL_FIELDS = Field.setOf(CONFIG_DEFINITION.all());
 
+    /**
+     * The literal {@code owner.table} form required of every {@code table.include.list} entry
+     * (ADR 0011 D2/D8): the entries double as the server-side extraction target names and the
+     * per-table SELECT authorization list, so regex patterns — which the server could not
+     * resolve and the privilege probe could not check — are rejected at startup.
+     */
+    private static final java.util.regex.Pattern INCLUDE_LIST_ENTRY = java.util.regex.Pattern.compile("[A-Za-z0-9_#]+\\.[A-Za-z0-9_#]+");
+
     private final String databaseName;
     private final SnapshotMode snapshotMode;
     private final int cdcPort;
@@ -188,6 +196,7 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
     private final long transactionRetentionMs;
     private final long snapshotTestPauseBeforeBarrierMs;
     private final long snapshotTestPauseAfterBarrierMs;
+    private final java.util.List<String> extractionTableNames;
 
     public CubridConnectorConfig(Configuration config) {
         super(
@@ -205,6 +214,49 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
         this.transactionRetentionMs = config.getLong(TRANSACTION_RETENTION_MS);
         this.snapshotTestPauseBeforeBarrierMs = config.getLong(SNAPSHOT_TEST_PAUSE_BEFORE_BARRIER_MS);
         this.snapshotTestPauseAfterBarrierMs = config.getLong(SNAPSHOT_TEST_PAUSE_AFTER_BARRIER_MS);
+        this.extractionTableNames = parseExtractionTableNames(config.getString(TABLE_INCLUDE_LIST));
+    }
+
+    /**
+     * {@code table.include.list} is mandatory (ADR 0011 D2): an unset list means a whole-log
+     * session, which stays DBA-only, and both the per-table SELECT check (D1) and the relation
+     * dictionary scope (D5) are derived from it.
+     */
+    private static java.util.List<String> parseExtractionTableNames(String tableIncludeList) {
+        if (tableIncludeList == null || tableIncludeList.isBlank()) {
+            throw new io.debezium.DebeziumException(
+                    "'" + TABLE_INCLUDE_LIST.name() + "' is required: the CUBRID connector derives its capture "
+                            + "targets, per-table SELECT authorization and relation dictionary scope from it "
+                            + "(ADR 0011 D2). Capturing the whole log without a list is not supported.");
+        }
+        final java.util.List<String> names = new java.util.ArrayList<>();
+        for (String entry : tableIncludeList.split(",")) {
+            final String name = entry.trim();
+            if (name.isEmpty()) {
+                continue;
+            }
+            if (!INCLUDE_LIST_ENTRY.matcher(name).matches()) {
+                throw new io.debezium.DebeziumException(
+                        "'" + TABLE_INCLUDE_LIST.name() + "' entry '" + name + "' is not a literal owner.table name. "
+                                + "The CUBRID connector passes each entry verbatim to the server as an extraction "
+                                + "target and probes SELECT on it, so regex patterns are not supported (ADR 0011 D2/D8).");
+            }
+            names.add(name.toLowerCase(java.util.Locale.ROOT));
+        }
+        if (names.isEmpty()) {
+            throw new io.debezium.DebeziumException(
+                    "'" + TABLE_INCLUDE_LIST.name() + "' contains no usable owner.table entry (ADR 0011 D2).");
+        }
+        return java.util.List.copyOf(names);
+    }
+
+    /**
+     * The literal {@code owner.table} capture targets (lowercase normal form), fed to the
+     * server as name-based extraction targets (ADR 0011 D3) and to the CDC authorization
+     * gate as the per-table SELECT list (D1).
+     */
+    public java.util.List<String> getExtractionTableNames() {
+        return extractionTableNames;
     }
 
     /** Test-only pause before the snapshot barrier capture; 0 = none (ADR 0009 D2 ②). */

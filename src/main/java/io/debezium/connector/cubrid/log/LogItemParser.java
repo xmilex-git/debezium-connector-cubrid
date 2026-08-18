@@ -58,6 +58,8 @@ final class LogItemParser {
         RawLogItem.DclType dclType = RawLogItem.DclType.UNKNOWN;
         long timestamp = 0;
         long lsaKey = 0;
+        String relationOwner = "";
+        String relationTable = "";
 
         switch (type) {
             case TYPE_DDL -> {
@@ -82,10 +84,13 @@ final class LogItemParser {
             case TYPE_TIMER -> timestamp = r.readInt64();
             case TYPE_ROLLBACK_TO -> lsaKey = r.readInt64();
             case TYPE_RELATION -> {
-                // consumed structurally; surfacing owner/table to the connector is workspace#70
-                r.readInt64(); // classoid
-                r.readStringBytes(); // owner
-                r.readStringBytes(); // table
+                // dictionary announce (classoid, owner, table) — ADR 0011 D4, workspace#70;
+                // empty owner+table = class already dropped at extraction time (invalid_class)
+                classoid = r.readInt64();
+                String owner = r.readString();
+                String table = r.readString();
+                relationOwner = owner == null ? "" : owner;
+                relationTable = table == null ? "" : table;
             }
             default -> throw new CubridLogException("cubrid_log parse: unknown data item type " + type,
                     CubridLogException.FAILED_EXTRACT);
@@ -93,7 +98,7 @@ final class LogItemParser {
         return new RawLogItem(transactionId, user, RawLogItem.ItemType.of(type),
                 ddlType, ddlObjectType, ddlStatement,
                 dmlType, classoid, changed, cond,
-                dclType, timestamp, lsaKey);
+                dclType, timestamp, lsaKey, relationOwner, relationTable);
     }
 
     private static List<ColumnValue> readColumns(OrReader r) {

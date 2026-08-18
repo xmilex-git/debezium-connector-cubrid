@@ -38,6 +38,16 @@ public class CubridLogClient {
     public record ExtractBatch(long lsaIn, long lsaOut, int returnCode, List<RawLogItem> items) {
     }
 
+    /**
+     * Node facts of the server the CDC session is actually attached to, carried in-band in
+     * the START_SESSION reply (workspace#70): the live HA server state and the database
+     * creation time. They feed the HA halt guard (ADR 0010 D2) without the DBA-only JDBC
+     * {@code SHOW LOG HEADER} — and, unlike a JDBC-side read, they describe the very server
+     * the log stream comes from.
+     */
+    public record NodeFacts(String haServerState, long dbCreationSeconds) {
+    }
+
     private static final long NULL_LSA = 0xFFFFFFFFFFFFFFFFL;
 
     private final CssConnection conn = new CssConnection();
@@ -52,6 +62,7 @@ public class CubridLogClient {
 
     private boolean connected;
     private long nextLsa = NULL_LSA;
+    private NodeFacts nodeFacts;
 
     public void setConnectionTimeout(int seconds) {
         requireNotConnected();
@@ -153,7 +164,20 @@ public class CubridLogClient {
             w.writeString(name);
         }
         byte[] reply = conn.request(WireConstants.NET_SERVER_CDC_START_SESSION, w.toByteArray(), connectionTimeout);
-        int code = new OrReader(reply).readInt();
+        nodeFacts = parseStartSessionReply(reply);
+    }
+
+    /**
+     * A current server acknowledges START_SESSION with {@code error_code(0) + ha_server_state
+     * + db_creation} (workspace#70). A bare 4-byte success reply is the pre-dictionary wire
+     * format: that engine cannot serve the relation dictionary (ADR 0011 D4) or name-based
+     * extraction (D3) either, so the client stops with an explicit version error instead of
+     * proceeding into a session it cannot route (ADR 0011 D10 — no {@code _db_class}
+     * fallback; server and connector ship in lockstep, #62).
+     */
+    static NodeFacts parseStartSessionReply(byte[] reply) {
+        OrReader r = new OrReader(reply);
+        int code = r.readInt();
         if (code == WireConstants.ER_CDC_NOT_AVAILABLE) {
             throw new CubridLogException("cubrid_log_connect_server: CDC unavailable — check the server's "
                     + "'supplemental_log' parameter", CubridLogException.UNAVAILABLE_CDC_SERVER);
@@ -162,6 +186,22 @@ public class CubridLogClient {
             throw new CubridLogException("cubrid_log_connect_server: start session reply " + code,
                     CubridLogException.FAILED_CONNECT);
         }
+        if (!r.hasRemaining()) {
+            throw new CubridLogException("cubrid_log_connect_server: the server accepted the session but its "
+                    + "reply carries no node facts — this engine predates the CDC relation dictionary "
+                    + "(ADR 0011 D4) and cannot serve this connector. Server and connector must ship from "
+                    + "the same release (ADR 0011 D10); upgrade the engine.",
+                    CubridLogException.FAILED_CONNECT);
+        }
+        String state = r.readString();
+        long dbCreation = r.readInt64();
+        return new NodeFacts(state == null ? "" : state, dbCreation);
+    }
+
+    /** The node facts received at {@link #connect}; only available while connected. */
+    public NodeFacts nodeFacts() {
+        requireConnected();
+        return nodeFacts;
     }
 
     /**
@@ -248,6 +288,7 @@ public class CubridLogClient {
             conn.close();
             connected = false;
             nextLsa = NULL_LSA;
+            nodeFacts = null;
         }
     }
 

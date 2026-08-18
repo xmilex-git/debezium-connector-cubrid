@@ -82,8 +82,13 @@ class CubridTxnBufferPolicyTest {
     }
 
     private void runBatch(BufferPolicy policy, long batchInLsa, long batchOutLsa, RawLogItem... items) throws InterruptedException {
+        for (RawLogItem it : items) {
+            if (it.type() == RawLogItem.ItemType.DML) {
+                state.relationDictionary.putIfAbsent(it.classoid(), TABLE); // pre-seeded announce (ADR 0011 D4)
+            }
+        }
         CubridStreamingChangeEventSource.processBatch(state, policy, List.of(items), batchInLsa, batchOutLsa,
-                classoid -> TABLE,
+                tableId -> true,
                 (lsa, seq) -> {
                     anchorLsa = lsa;
                     anchorSeq = seq;

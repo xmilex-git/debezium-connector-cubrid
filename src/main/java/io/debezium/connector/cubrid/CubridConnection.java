@@ -10,10 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 
 import io.debezium.jdbc.JdbcConfiguration;
@@ -22,8 +20,6 @@ import io.debezium.relational.Column;
 import io.debezium.relational.ColumnEditor;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
-
-import cubrid.sql.CUBRIDOID;
 
 /**
  * {@link JdbcConnection} extension to be used with CUBRID.
@@ -210,58 +206,5 @@ public class CubridConnection extends JdbcConnection {
             }
         }
         return tableIds;
-    }
-
-    /** The HA-relevant node facts read from {@code SHOW LOG HEADER} (ADR 0010 D2). */
-    public record HaNodeInfo(String haServerState, long dbCreationMillis) {
-    }
-
-    /**
-     * Reads the connected node's HA server state and database creation time from the active log
-     * header. {@code SHOW LOG HEADER} is DBA-only in the engine ({@code show_meta.c}), so the
-     * connector's JDBC user must be in the DBA group for the HA halt guard to run — the guard
-     * fails closed with a pointed message otherwise (ADR 0010 D2).
-     */
-    public HaNodeInfo readHaNodeInfo() throws SQLException {
-        try (java.sql.Statement stmt = connection().createStatement();
-                ResultSet rs = stmt.executeQuery("SHOW LOG HEADER")) {
-            if (!rs.next()) {
-                throw new SQLException("SHOW LOG HEADER returned no rows");
-            }
-            return new HaNodeInfo(rs.getString("Ha_server_state"), rs.getTimestamp("Creation_time").getTime());
-        }
-    }
-
-    /**
-     * Maps the {@code classoid} carried by every {@code cubrid_log} DML item to its owner-qualified
-     * table id.
-     * <p>
-     * The engine emits the classoid as the raw 8-byte memcpy of its {@code OID} struct
-     * ({@code pageid int32 | slotid int16 | volid int16}, little-endian), and the JDBC driver
-     * exposes the same OID through {@code _db_class.class_of} as {@code @pageid|slotid|volid} —
-     * verified against the P0 harness dumps (workspace#40).
-     * <p>
-     * {@code _db_class} is DBA-only; this last DBA dependency is removed by the in-band relation
-     * dictionary (ADR 0011 D4, workspace#70), which replaces this lookup entirely.
-     */
-    public Map<Long, TableId> readClassOidTableIds() throws SQLException {
-        final Map<Long, TableId> map = new HashMap<>();
-        try (java.sql.Statement stmt = connection().createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT class_of, owner.name, class_name FROM _db_class")) {
-            while (rs.next()) {
-                final Object oid = rs.getObject(1);
-                final String owner = rs.getString(2);
-                final String name = rs.getString(3);
-                if (oid instanceof CUBRIDOID cubridOid) {
-                    final String[] parts = cubridOid.getOidString().substring(1).split("\\|");
-                    final long pageId = Long.parseLong(parts[0]);
-                    final long slotId = Long.parseLong(parts[1]);
-                    final long volId = Long.parseLong(parts[2]);
-                    map.put((volId << 48) | (slotId << 32) | pageId,
-                            new TableId(null, owner.toLowerCase(Locale.ROOT), name));
-                }
-            }
-        }
-        return map;
     }
 }

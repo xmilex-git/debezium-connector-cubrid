@@ -54,8 +54,9 @@ class CubridStreamingAnchorInvariantTest {
     }
 
     private void runBatch(long batchInLsa, long batchOutLsa, RawLogItem... items) throws InterruptedException {
+        state.relationDictionary.putIfAbsent(CLASSOID, TABLE); // in-stream announce, pre-seeded (ADR 0011 D4)
         CubridStreamingChangeEventSource.processBatch(state, BufferPolicy.UNLIMITED, List.of(items), batchInLsa, batchOutLsa,
-                classoid -> TABLE,
+                tableId -> true,
                 (lsa, seq) -> {
                     anchorLsa = lsa;
                     anchorSeq = seq;

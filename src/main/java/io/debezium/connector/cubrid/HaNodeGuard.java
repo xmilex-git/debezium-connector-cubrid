@@ -14,9 +14,9 @@ import org.slf4j.LoggerFactory;
 /**
  * The HA halt guard (ADR 0010 D2), pure logic so it is unit-testable without JDBC.
  * <p>
- * Empirically confirmed determination means (engine 11.5, {@code SHOW LOG HEADER} — DBA-only):
- * {@code Ha_server_state} is the disk log header's HA state ('idle' on a non-HA server,
- * 'active'/'standby'/... on HA nodes), and {@code Creation_time} is the database creation time.
+ * The node facts arrive in-band in the CDC START_SESSION reply (workspace#70; formerly the
+ * DBA-only JDBC {@code SHOW LOG HEADER}): the live HA server state ('idle' on a non-HA server,
+ * 'active'/'standby'/... on HA nodes) and the database creation time ({@code db_creation}).
  * The node identity stored in the offset is {@code <configured hostname>@<creation millis>}:
  * the hostname catches the standard failover procedure (operator repoints the connector at the
  * new master), the creation time additionally catches clusters whose nodes were created

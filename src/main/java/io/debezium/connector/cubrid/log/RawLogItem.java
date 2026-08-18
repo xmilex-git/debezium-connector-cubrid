@@ -27,6 +27,7 @@ public final class RawLogItem {
         DCL,
         TIMER,
         ROLLBACK_TO,
+        RELATION,
         UNKNOWN;
 
         static ItemType of(int code) {
@@ -36,6 +37,7 @@ public final class RawLogItem {
                 case 2 -> DCL;
                 case 3 -> TIMER;
                 case 4 -> ROLLBACK_TO;
+                case 5 -> RELATION;
                 default -> UNKNOWN;
             };
         }
@@ -146,10 +148,26 @@ public final class RawLogItem {
      */
     private final long lsaKey;
 
+    /*
+     * RELATION (workspace#70, ADR 0011 D4): the dictionary names of {@link #classoid}.
+     * Both empty when the class was already dropped by extraction time (the engine's
+     * invalid_class announce) — the classoid is announced but cannot be routed.
+     */
+    private final String relationOwner;
+    private final String relationTable;
+
     RawLogItem(int transactionId, String user, ItemType type,
                int ddlType, int ddlObjectType, String ddlStatement,
                DmlType dmlType, long classoid, List<ColumnValue> changedColumns, List<ColumnValue> condColumns,
                DclType dclType, long timestamp, long lsaKey) {
+        this(transactionId, user, type, ddlType, ddlObjectType, ddlStatement,
+                dmlType, classoid, changedColumns, condColumns, dclType, timestamp, lsaKey, "", "");
+    }
+
+    RawLogItem(int transactionId, String user, ItemType type,
+               int ddlType, int ddlObjectType, String ddlStatement,
+               DmlType dmlType, long classoid, List<ColumnValue> changedColumns, List<ColumnValue> condColumns,
+               DclType dclType, long timestamp, long lsaKey, String relationOwner, String relationTable) {
         this.transactionId = transactionId;
         this.user = user;
         this.type = type;
@@ -163,6 +181,14 @@ public final class RawLogItem {
         this.dclType = dclType;
         this.timestamp = timestamp;
         this.lsaKey = lsaKey;
+        this.relationOwner = relationOwner;
+        this.relationTable = relationTable;
+    }
+
+    /** A CDC_RELATION dictionary announce {@code (classoid, owner, table)} (ADR 0011 D4). */
+    static RawLogItem relation(int transactionId, String user, long classoid, String owner, String table) {
+        return new RawLogItem(transactionId, user, ItemType.RELATION, 0, 0, null,
+                DmlType.UNKNOWN, classoid, List.of(), List.of(), DclType.UNKNOWN, 0, 0, owner, table);
     }
 
     public int transactionId() {
@@ -226,6 +252,16 @@ public final class RawLogItem {
     /** DML: this record's lsa key; ROLLBACK_TO: the rewind target key; 0 otherwise. */
     public long lsaKey() {
         return lsaKey;
+    }
+
+    /** RELATION: the owner of {@link #classoid}; empty when the class was already dropped. */
+    public String relationOwner() {
+        return relationOwner;
+    }
+
+    /** RELATION: the table name of {@link #classoid}; empty when the class was already dropped. */
+    public String relationTable() {
+        return relationTable;
     }
 
     public String toDisplayString() {

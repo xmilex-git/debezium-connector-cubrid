@@ -36,6 +36,8 @@ public final class CubridLogWireSmoke {
         client.setAllInCond(true);
         client.connect(host, port, dbname, user, password);
         System.out.println("CONNECT ok");
+        System.out.println("NODE_FACTS ha_state=" + client.nodeFacts().haServerState()
+                + " db_creation=" + client.nodeFacts().dbCreationSeconds());
 
         long cursor = client.findLsa(System.currentTimeMillis() / 1000 - lookbackSeconds);
         System.out.println("FIND_LSA " + CubridLogClient.lsaDisplay(cursor));
