@@ -5,10 +5,11 @@ row-level changes from a [CUBRID](https://cubrid.org/) database via its
 `cubrid_log` CDC extraction API and publishes them as Kafka Connect change
 events.
 
-Status: **incubating**. The connector currently binds the native
-`libcubrid_log.so` client through JNA, so the Connect worker host needs a
-CUBRID installation (`LD_LIBRARY_PATH` must reach the CUBRID `lib/`), and the
-CUBRID server must run with `supplemental_log` enabled.
+Status: **incubating**. The connector speaks the `cubrid_log` extraction
+protocol through a pure-Java wire client (no native library, no CUBRID
+installation on the Connect worker — ADR 0012); the CUBRID server must run
+with `supplemental_log` enabled and ship in lockstep with the connector
+release (no cross-version wire negotiation by design).
 
 ## Building
 
@@ -36,7 +37,9 @@ mvn verify -Dcheckstyle.skip -Dformat.skip -Drevapi.skip -Denforcer.skip
 ```
 
 Unit tests are pure JVM (no CUBRID server needed) and cover the streaming
-anchor/offset invariants and the transaction-buffer caps policy.
+anchor/offset invariants, the transaction-buffer caps policy, and the CDC wire
+protocol against byte-exact fixtures captured from a live server
+(`src/test/resources/wire/`).
 
 ## Versioning
 
@@ -53,7 +56,7 @@ upstream-donation stage.
 
 `mvn package` produces `target/debezium-connector-cubrid-<version>.jar`. Place
 it in a Connect plugin directory together with its runtime companions
-(`debezium-core`, `debezium-api`, `jna`, `cubrid-jdbc`) and restart the worker.
+(`debezium-core`, `debezium-api`, `cubrid-jdbc`) and restart the worker.
 
 ## Provenance
 

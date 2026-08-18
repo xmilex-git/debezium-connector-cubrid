@@ -18,8 +18,8 @@ import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.debezium.connector.cubrid.jna.CubridLogClient;
-import io.debezium.connector.cubrid.jna.RawLogItem;
+import io.debezium.connector.cubrid.log.CubridLogClient;
+import io.debezium.connector.cubrid.log.RawLogItem;
 import io.debezium.data.Envelope.Operation;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
@@ -199,6 +199,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             final Map<Long, TableId> tableByClassoid = readClassOidTableIds();
 
             client.setAllInCond(true);
+            // the C client's db_login() authorization pass, reproduced over JDBC (#68 → #72);
+            // no extraction table names are set yet (#70), so this requires a DBA-group
+            // account — the same requirement the C client enforced for a full-log session
+            client.setAuthorizationGate(CubridCdcAuthorization.gate(connection));
             client.connect(
                     connectorConfig.getJdbcConfig().getHostname(),
                     connectorConfig.getCdcPort(),

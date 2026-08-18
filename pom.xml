@@ -15,7 +15,6 @@
     <packaging>jar</packaging>
 
     <properties>
-        <version.jna>5.14.0</version.jna>
         <!-- host-install driver (ADR 0005 D7); CI overrides with the public ftp.cubrid.org build -->
         <version.cubrid.jdbc>11.3.2.0058</version.cubrid.jdbc>
     </properties>
@@ -30,11 +29,6 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>connect-api</artifactId>
             <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>net.java.dev.jna</groupId>
-            <artifactId>jna</artifactId>
-            <version>${version.jna}</version>
         </dependency>
         <!-- host-install driver (ADR 0005 D7), installed into the local repo by
              htap-poc/e2e/build-connector.sh via install:install-file -->

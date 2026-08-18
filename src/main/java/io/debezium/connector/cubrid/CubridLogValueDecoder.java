@@ -13,7 +13,7 @@ import java.sql.Types;
 import java.util.List;
 
 import io.debezium.DebeziumException;
-import io.debezium.connector.cubrid.jna.RawLogItem;
+import io.debezium.connector.cubrid.log.RawLogItem;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 

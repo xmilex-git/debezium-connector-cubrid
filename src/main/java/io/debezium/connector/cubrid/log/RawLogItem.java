@@ -3,13 +3,14 @@
  *
  * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
  */
-package io.debezium.connector.cubrid.jna;
+package io.debezium.connector.cubrid.log;
 
 import java.util.List;
 
 /**
- * A {@code CUBRID_LOG_ITEM} copied out of native memory into plain Java values, so it
- * stays valid after {@code cubrid_log_clear_log_item()} frees the batch.
+ * A {@code CUBRID_LOG_ITEM} decoded from the CDC wire stream into plain Java values
+ * (formerly copied out of the JNA client's native memory — the value-byte contract is
+ * unchanged).
  *
  * <p>Column values arrive as raw bytes without the server-side pack code: only the byte
  * length is known, so len==4 (int|float) and len==8 (bigint|double|8-char string) are

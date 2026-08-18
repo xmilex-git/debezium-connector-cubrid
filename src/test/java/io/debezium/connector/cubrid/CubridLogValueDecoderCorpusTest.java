@@ -18,7 +18,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import io.debezium.DebeziumException;
-import io.debezium.connector.cubrid.jna.RawLogItem.ColumnValue;
+import io.debezium.connector.cubrid.log.RawLogItem.ColumnValue;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;

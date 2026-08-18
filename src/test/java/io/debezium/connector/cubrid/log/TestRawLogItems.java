@@ -3,13 +3,13 @@
  *
  * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
  */
-package io.debezium.connector.cubrid.jna;
+package io.debezium.connector.cubrid.log;
 
 import java.util.List;
 
 /**
  * Test-only factories for {@link RawLogItem}, whose constructor is package-private because
- * production instances are only ever copied out of native {@code CUBRID_LOG_ITEM} memory.
+ * production instances are only ever decoded from the CDC wire stream.
  */
 public final class TestRawLogItems {
 

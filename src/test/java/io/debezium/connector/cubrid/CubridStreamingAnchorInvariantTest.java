@@ -5,12 +5,12 @@
  */
 package io.debezium.connector.cubrid;
 
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.abort;
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.commit;
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.insert;
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.insertAt;
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.rollbackTo;
-import static io.debezium.connector.cubrid.jna.TestRawLogItems.timer;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.abort;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.commit;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.insert;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.insertAt;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.rollbackTo;
+import static io.debezium.connector.cubrid.log.TestRawLogItems.timer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.BufferPolicy;
 import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.StreamState;
 import io.debezium.connector.cubrid.CubridStreamingChangeEventSource.TxnBufferMetrics;
-import io.debezium.connector.cubrid.jna.RawLogItem;
+import io.debezium.connector.cubrid.log.RawLogItem;
 import io.debezium.relational.TableId;
 
 /**

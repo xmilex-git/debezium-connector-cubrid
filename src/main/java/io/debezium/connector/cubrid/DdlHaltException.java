@@ -6,7 +6,7 @@
 package io.debezium.connector.cubrid;
 
 import io.debezium.DebeziumException;
-import io.debezium.connector.cubrid.jna.RawLogItem;
+import io.debezium.connector.cubrid.log.RawLogItem;
 import io.debezium.relational.TableId;
 
 /**

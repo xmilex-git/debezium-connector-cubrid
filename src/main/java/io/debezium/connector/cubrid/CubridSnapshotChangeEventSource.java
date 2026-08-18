@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
 import io.debezium.connector.cubrid.CubridOffsetContext.Loader;
-import io.debezium.connector.cubrid.jna.CubridLogClient;
+import io.debezium.connector.cubrid.log.CubridLogClient;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.notification.NotificationService;
