@@ -140,6 +140,22 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
     public static final Field SOURCE_INFO_STRUCT_MAKER = CommonConnectorConfig.SOURCE_INFO_STRUCT_MAKER
             .withDefault(CubridSourceInfoStructMaker.class.getName());
 
+    /**
+     * Test-only fault-injection hooks (ADR 0009 D2 fault test ②): pause the snapshot for the
+     * given ms immediately before the barrier LSA capture / immediately after the barrier is
+     * captured and the pre-barrier REPEATABLE READ view is discarded, so a test can inject
+     * commits deterministically into each window. 0 (default) = no pause; never set in production.
+     */
+    public static final Field SNAPSHOT_TEST_PAUSE_BEFORE_BARRIER_MS = Field.createInternal("snapshot.test.pause.before.barrier.ms")
+            .withType(ConfigDef.Type.LONG)
+            .withValidation(Field::isNonNegativeLong)
+            .withDefault(0L);
+
+    public static final Field SNAPSHOT_TEST_PAUSE_AFTER_BARRIER_MS = Field.createInternal("snapshot.test.pause.after.barrier.ms")
+            .withType(ConfigDef.Type.LONG)
+            .withValidation(Field::isNonNegativeLong)
+            .withDefault(0L);
+
     private static final ConfigDefinition CONFIG_DEFINITION = RelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
             .name("CUBRID")
             .group(Field.Group.CONNECTION,
@@ -170,6 +186,8 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
     private final int cdcPort;
     private final long transactionEventsThreshold;
     private final long transactionRetentionMs;
+    private final long snapshotTestPauseBeforeBarrierMs;
+    private final long snapshotTestPauseAfterBarrierMs;
 
     public CubridConnectorConfig(Configuration config) {
         super(
@@ -185,6 +203,18 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
         this.cdcPort = config.getInteger(CDC_PORT);
         this.transactionEventsThreshold = config.getLong(TRANSACTION_EVENTS_THRESHOLD);
         this.transactionRetentionMs = config.getLong(TRANSACTION_RETENTION_MS);
+        this.snapshotTestPauseBeforeBarrierMs = config.getLong(SNAPSHOT_TEST_PAUSE_BEFORE_BARRIER_MS);
+        this.snapshotTestPauseAfterBarrierMs = config.getLong(SNAPSHOT_TEST_PAUSE_AFTER_BARRIER_MS);
+    }
+
+    /** Test-only pause before the snapshot barrier capture; 0 = none (ADR 0009 D2 ②). */
+    public long getSnapshotTestPauseBeforeBarrierMs() {
+        return snapshotTestPauseBeforeBarrierMs;
+    }
+
+    /** Test-only pause after the barrier capture + view discard; 0 = none (ADR 0009 D2 ②). */
+    public long getSnapshotTestPauseAfterBarrierMs() {
+        return snapshotTestPauseAfterBarrierMs;
     }
 
     /** Per-transaction buffered-event cap; 0 = unlimited (ADR 0007 D2). */

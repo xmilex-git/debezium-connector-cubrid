@@ -35,12 +35,16 @@ import io.debezium.snapshot.SnapshotterService;
 import io.debezium.util.Clock;
 
 /**
- * Initial snapshot source (ADR 0005): reuses the Debezium JDBC snapshot with CUBRID JDBC.
+ * Initial snapshot source, online without a write stop (ADR 0009 D1 on top of ADR 0005).
  * <ul>
- * <li>No locking — the write stop on captured tables is an operator procedure (D2); the snapshot
- * transaction is merely promoted to REPEATABLE READ for a consistent multi-statement view.</li>
- * <li>The barrier LSA is captured by the connector itself over JNA in
- * {@link #determineSnapshotOffset} (D3), before any table is read.</li>
+ * <li>No locking and no write stop — writes may continue during the snapshot; the operator
+ * write-stop checklist of ADR 0005 survives only as a conservative fallback procedure. The
+ * snapshot transaction is promoted to REPEATABLE READ for a consistent multi-statement view.</li>
+ * <li>The barrier LSA is captured by the connector itself in {@link #determineSnapshotOffset}
+ * (ADR 0005 D3), and the consistent read view is (re-)established strictly <em>after</em> the
+ * barrier — see the invariant note in that method. Any commit the view does not contain then has
+ * an LSA at or above the barrier and is replayed by streaming; any commit the view does contain
+ * that streaming replays too converges because snapshot rows lose to CDC rows (D4).</li>
  * <li>Snapshot rows carry {@code source.lsn = 0} so any CDC event wins in the
  * ReplacingMergeTree (D4); the handover offset is {@code {barrier, seq=0, epoch=0}} (D5).</li>
  * </ul>
@@ -72,8 +76,9 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
 
     @Override
     protected void connectionCreated(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> snapshotContext) throws Exception {
-        // Cost-free double protection on top of the operator write stop: a consistent
-        // multi-statement view plus DDL blockage while the snapshot reads (ADR 0005 D2).
+        // The consistency mechanism of the online snapshot (ADR 0009 D1): a REPEATABLE READ
+        // multi-statement view. Known constraints (documented, ADR 0009 D2): the RR reader
+        // blocks DDL for the duration of the scan, and large tables prolong that window.
         connection.connection().setAutoCommit(false);
         connection.connection().setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
         LOGGER.info("Snapshot connection promoted to REPEATABLE READ");
@@ -89,8 +94,8 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
     @Override
     protected void lockTablesForSchemaSnapshot(ChangeEventSourceContext sourceContext,
                                                RelationalSnapshotContext<CubridPartition, CubridOffsetContext> snapshotContext) {
-        // No-op by decision (ADR 0005 D2): CUBRID has no LOCK TABLE statement and the write stop
-        // on captured tables is an operator responsibility.
+        // No-op by decision (ADR 0005 D2 / ADR 0009 D1): CUBRID has no LOCK TABLE statement and
+        // the snapshot is online — concurrent writes converge via barrier + RR view + version 0.
     }
 
     @Override
@@ -100,14 +105,17 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
 
     @Override
     protected void determineSnapshotOffset(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> ctx,
-                                           CubridOffsetContext previousOffset) {
+                                           CubridOffsetContext previousOffset) throws Exception {
         if (previousOffset != null && previousOffset.getAnchorLsa().isAvailable()) {
+            // Interrupted-snapshot rerun (ADR 0009 D2 ④): reuse the original barrier. The rescan's
+            // view is established now, i.e. after that (older) barrier, so the ordering invariant
+            // below holds trivially and streaming replay from the barrier covers every difference.
             ctx.offset = previousOffset;
             return;
         }
+        testPause("before barrier capture", connectorConfig.getSnapshotTestPauseBeforeBarrierMs());
         // Capture the barrier LSA over JNA (ADR 0005 D3). The framework calls this before any
-        // table scan, matching the §8.1 "stop -> record barrier -> scan" order; streaming later
-        // resumes exactly at the barrier with counter 0 and epoch 0 (D5).
+        // table scan; streaming later resumes exactly at the barrier with counter 0 and epoch 0 (D5).
         final CubridLogClient client = new CubridLogClient();
         try {
             client.connect(
@@ -128,6 +136,23 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
             catch (Exception e) {
                 LOGGER.warn("Failed to finalize the barrier cubrid_log client", e);
             }
+        }
+        // INVARIANT (ADR 0009 D1): the REPEATABLE READ view the data scan reads from must be
+        // established strictly AFTER the barrier. The framework's metadata queries
+        // (getAllTableIds) already opened a view on this connection BEFORE the barrier was
+        // captured — a commit landing between that view and the barrier would be in neither the
+        // snapshot nor the stream (fault test ②'s loss window). Ending the transaction here
+        // discards the pre-barrier view; the next statement (readTableStructure / the data scan,
+        // same connection since snapshot.max.threads=1) opens a fresh view above the barrier.
+        connection.connection().commit();
+        LOGGER.info("Discarded pre-barrier REPEATABLE READ view; scan view will be established after the barrier");
+        testPause("after barrier capture", connectorConfig.getSnapshotTestPauseAfterBarrierMs());
+    }
+
+    private static void testPause(String where, long ms) throws InterruptedException {
+        if (ms > 0) {
+            LOGGER.warn("TEST PAUSE {} ms {} (fault-injection hook, never set in production)", ms, where);
+            Thread.sleep(ms);
         }
     }
 
