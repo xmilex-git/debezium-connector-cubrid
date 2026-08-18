@@ -11,6 +11,13 @@ installation on the Connect worker — ADR 0012); the CUBRID server must run
 with `supplemental_log` enabled and ship in lockstep with the connector
 release (no cross-version wire negotiation by design).
 
+## Documentation
+
+- [docs/support-scope.md](docs/support-scope.md) — 1.0 스펙·지원 범위·알려진 제약 (한국어)
+- [docs/setup-guide.md](docs/setup-guide.md) — 기술지원용 세팅·운영 가이드 (한국어)
+- [docs/type-support.md](docs/type-support.md) — 컬럼 타입 지원 매트릭스
+- [docs/snapshot.md](docs/snapshot.md) — 스냅샷 설계·blocking snapshot
+
 ## Building
 
 Prerequisites:
