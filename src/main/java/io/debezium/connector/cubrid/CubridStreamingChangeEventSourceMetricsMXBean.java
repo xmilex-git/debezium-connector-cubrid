@@ -32,4 +32,16 @@ public interface CubridStreamingChangeEventSourceMetricsMXBean extends Streaming
 
     /** Age in ms of the oldest in-flight transaction's first buffered change; 0 when none in flight. */
     long getOldestInflightAgeInMilliseconds();
+
+    /** Number of DDL halts fired on captured tables (ADR 0008 D5); each one fails the task. */
+    long getDdlHaltCount();
+
+    /** Captured table of the most recent DDL halt; empty when none fired. */
+    String getLastDdlHaltTable();
+
+    /** DDL type and statement of the most recent DDL halt; empty when none fired. */
+    String getLastDdlHaltStatement();
+
+    /** Number of mid-stream CREATE TABLE items observed and skipped (ADR 0008 D3). */
+    long getMidStreamCreateTableCount();
 }

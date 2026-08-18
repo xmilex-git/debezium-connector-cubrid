@@ -34,6 +34,13 @@ public final class TestRawLogItems {
                 RawLogItem.DclType.UNKNOWN, 0, lsaKey);
     }
 
+    /** DDL item carrying the engine's raw {@code CDC_DDL_TYPE}/{@code CDC_DDL_OBJECT_TYPE} codes. */
+    public static RawLogItem ddl(int trid, int ddlType, int objectType, long classoid, String statement) {
+        return new RawLogItem(trid, "dba", RawLogItem.ItemType.DDL, ddlType, objectType, statement,
+                RawLogItem.DmlType.UNKNOWN, classoid, List.of(), List.of(),
+                RawLogItem.DclType.UNKNOWN, 0, 0);
+    }
+
     public static RawLogItem commit(int trid) {
         return new RawLogItem(trid, "dba", RawLogItem.ItemType.DCL, 0, 0, null,
                 RawLogItem.DmlType.UNKNOWN, 0, List.of(), List.of(),

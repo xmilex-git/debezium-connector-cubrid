@@ -132,6 +132,14 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
 
         /** Batch-end gauges: in-flight transaction count and the oldest in-flight age (0 when none). */
         void onBatchEnd(int activeCount, long oldestAgeMs);
+
+        /** A DDL halt fired on a captured table (ADR 0008 D5); the task is about to fail. */
+        default void onDdlHalt(String table, String ddlType, String statement) {
+        }
+
+        /** A mid-stream CREATE TABLE was observed and skipped (ADR 0008 D3). */
+        default void onMidStreamCreateTable(String statement) {
+        }
     }
 
     /** Receives anchor advances; the production sink is {@link CubridOffsetContext#setAnchor}. */
@@ -229,6 +237,11 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
      * {@code state.abandoned}, and the anchor advances past it at batch end. Abandoned changes are
      * permanently lost downstream; recovery is a re-snapshot. Items of abandoned transactions stay
      * counted, so counter determinism on replay is unaffected.
+     * <p>
+     * DDL halt (ADR 0008): a captured-table ALTER/DROP/RENAME/TRUNCATE DDL item throws
+     * {@link DdlHaltException} the moment it is seen — committed events before it publish
+     * normally, in-flight buffers never publish, and the anchor stays before the DDL so a
+     * restart deterministically re-halts. Mid-stream CREATE TABLE only warns (D3).
      */
     static void processBatch(StreamState state, BufferPolicy policy, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
                              java.util.function.LongFunction<TableId> capturedTableFor,
@@ -295,8 +308,30 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                         state.inflight.remove(item.transactionId());
                     }
                 }
+                case DDL -> {
+                    // counted for determinism, never emitted; on halt the batch-end anchor advance
+                    // below never runs, so the anchor stays before this DDL and an unassisted
+                    // restart replays into the same halt (ADR 0008 D4)
+                    if (!item.isTableDdl()) {
+                        continue; // non-TABLE object DDL never affects row encoding/identity (ADR 0008 D1)
+                    }
+                    final RawLogItem.DdlType ddlType = item.decodedDdlType();
+                    if (ddlType == RawLogItem.DdlType.CREATE) {
+                        metrics.onMidStreamCreateTable(item.ddlStatement());
+                        LOGGER.warn("Mid-stream CREATE TABLE observed and skipped — capturing a new table requires "
+                                + "the documented restart+snapshot procedure (ADR 0008 D3): {}", item.ddlStatement());
+                        continue;
+                    }
+                    final TableId tableId = capturedTableFor.apply(item.classoid());
+                    if (tableId == null) {
+                        continue; // not a captured table (ADR 0008 D1)
+                    }
+                    // ALTER/DROP/RENAME/TRUNCATE — and, fail-safe, any unknown future ddl_type
+                    metrics.onDdlHalt(tableId.identifier(), ddlType.name(), item.ddlStatement());
+                    throw new DdlHaltException(tableId, ddlType, item.ddlStatement());
+                }
                 default -> {
-                    // DDL — counted for determinism, never emitted (fixed-schema POC)
+                    // UNKNOWN item type — counted, ignored
                 }
             }
         }

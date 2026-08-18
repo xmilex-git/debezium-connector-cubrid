@@ -21,7 +21,12 @@ import java.util.List;
 public final class RawLogItem {
 
     public enum ItemType {
-        DDL, DML, DCL, TIMER, ROLLBACK_TO, UNKNOWN;
+        DDL,
+        DML,
+        DCL,
+        TIMER,
+        ROLLBACK_TO,
+        UNKNOWN;
 
         static ItemType of(int code) {
             return switch (code) {
@@ -36,7 +41,13 @@ public final class RawLogItem {
     }
 
     public enum DmlType {
-        INSERT, UPDATE, DELETE, TRIGGER_INSERT, TRIGGER_UPDATE, TRIGGER_DELETE, UNKNOWN;
+        INSERT,
+        UPDATE,
+        DELETE,
+        TRIGGER_INSERT,
+        TRIGGER_UPDATE,
+        TRIGGER_DELETE,
+        UNKNOWN;
 
         static DmlType of(int code) {
             return switch (code) {
@@ -51,8 +62,30 @@ public final class RawLogItem {
         }
     }
 
+    public enum DdlType {
+        CREATE,
+        ALTER,
+        DROP,
+        RENAME,
+        TRUNCATE,
+        UNKNOWN;
+
+        static DdlType of(int code) {
+            return switch (code) {
+                case 0 -> CREATE;
+                case 1 -> ALTER;
+                case 2 -> DROP;
+                case 3 -> RENAME;
+                case 4 -> TRUNCATE;
+                default -> UNKNOWN;
+            };
+        }
+    }
+
     public enum DclType {
-        COMMIT, ABORT, UNKNOWN;
+        COMMIT,
+        ABORT,
+        UNKNOWN;
 
         static DclType of(int code) {
             return switch (code) {
@@ -106,8 +139,10 @@ public final class RawLogItem {
     private final DclType dclType;
     private final long timestamp;
 
-    /* DML: orderable lsa key of the source record; ROLLBACK_TO: rewind target.
-     * Key layout (pageid << 16 | offset) — numeric order == log order. */
+    /*
+     * DML: orderable lsa key of the source record; ROLLBACK_TO: rewind target.
+     * Key layout (pageid << 16 | offset) — numeric order == log order.
+     */
     private final long lsaKey;
 
     RawLogItem(int transactionId, String user, ItemType type,
@@ -143,6 +178,16 @@ public final class RawLogItem {
 
     public int ddlType() {
         return ddlType;
+    }
+
+    /** {@link #ddlType()} decoded against the engine's {@code CDC_DDL_TYPE} enum. */
+    public DdlType decodedDdlType() {
+        return DdlType.of(ddlType);
+    }
+
+    /** {@code true} when this DDL item targets a table ({@code CDC_DDL_OBJECT_TYPE} {@code CDC_TABLE} = 0). */
+    public boolean isTableDdl() {
+        return ddlObjectType == 0;
     }
 
     public int ddlObjectType() {

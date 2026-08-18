@@ -16,7 +16,7 @@ import io.debezium.pipeline.metrics.DefaultStreamingChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 
 /**
- * JMX implementation of the CUBRID buffer-policy streaming metrics (ADR 0007). Updated from the
+ * JMX implementation of the CUBRID buffer-policy (ADR 0007) and DDL-halt (ADR 0008) streaming metrics. Updated from the
  * streaming thread through the {@link CubridStreamingChangeEventSource.TxnBufferMetrics} hooks,
  * read from JMX threads — all state is atomics or synchronized.
  */
@@ -31,6 +31,10 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     private final AtomicLong abandonedTransactions = new AtomicLong();
     private final AtomicLong oldestInflightAgeMs = new AtomicLong();
     private final LinkedHashSet<String> abandonedTransactionIds = new LinkedHashSet<>();
+    private final AtomicLong ddlHalts = new AtomicLong();
+    private final AtomicLong midStreamCreateTables = new AtomicLong();
+    private volatile String lastDdlHaltTable = "";
+    private volatile String lastDdlHaltStatement = "";
 
     public <T extends CdcSourceTaskContext> CubridStreamingChangeEventSourceMetrics(T taskContext,
                                                                                     ChangeEventQueueMetrics changeEventQueueMetrics,
@@ -55,6 +59,18 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     public void onBatchEnd(int activeCount, long oldestAgeMs) {
         activeTransactions.set(activeCount);
         oldestInflightAgeMs.set(oldestAgeMs);
+    }
+
+    @Override
+    public void onDdlHalt(String table, String ddlType, String statement) {
+        ddlHalts.incrementAndGet();
+        lastDdlHaltTable = table;
+        lastDdlHaltStatement = ddlType + ": " + (statement == null ? "" : statement);
+    }
+
+    @Override
+    public void onMidStreamCreateTable(String statement) {
+        midStreamCreateTables.incrementAndGet();
     }
 
     private void rememberAbandoned(int trid) {
@@ -95,12 +111,36 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     }
 
     @Override
+    public long getDdlHaltCount() {
+        return ddlHalts.get();
+    }
+
+    @Override
+    public String getLastDdlHaltTable() {
+        return lastDdlHaltTable;
+    }
+
+    @Override
+    public String getLastDdlHaltStatement() {
+        return lastDdlHaltStatement;
+    }
+
+    @Override
+    public long getMidStreamCreateTableCount() {
+        return midStreamCreateTables.get();
+    }
+
+    @Override
     public void reset() {
         super.reset();
         activeTransactions.set(0);
         oversizedTransactions.set(0);
         abandonedTransactions.set(0);
         oldestInflightAgeMs.set(0);
+        ddlHalts.set(0);
+        midStreamCreateTables.set(0);
+        lastDdlHaltTable = "";
+        lastDdlHaltStatement = "";
         synchronized (abandonedTransactionIds) {
             abandonedTransactionIds.clear();
         }
