@@ -76,7 +76,12 @@ final class CubridLogValueDecoder {
                 return le(data).getLong();
             case Types.REAL:
             case Types.FLOAT:
-                return data.length == 4 ? le(data).getFloat() : le(data).getDouble();
+                // no ternary: its numeric promotion would widen the float to a Double,
+                // breaking the FLOAT32 schema (found by the workspace#58 boundary corpus)
+                if (data.length == 4) {
+                    return le(data).getFloat();
+                }
+                return le(data).getDouble();
             case Types.DOUBLE:
                 return le(data).getDouble();
             case Types.NUMERIC:
