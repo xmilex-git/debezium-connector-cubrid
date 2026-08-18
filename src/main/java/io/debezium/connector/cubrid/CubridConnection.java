@@ -5,17 +5,16 @@
  */
 package io.debezium.connector.cubrid;
 
-import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-
-import cubrid.sql.CUBRIDOID;
 
 import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.jdbc.JdbcConnection;
@@ -23,15 +22,24 @@ import io.debezium.relational.Column;
 import io.debezium.relational.ColumnEditor;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
-import io.debezium.relational.Tables.ColumnNameFilter;
+
+import cubrid.sql.CUBRIDOID;
 
 /**
  * {@link JdbcConnection} extension to be used with CUBRID.
  * <p>
- * The CUBRID driver ignores the catalog/schema arguments of every {@link DatabaseMetaData} call
- * (ADR 0005), so all lookups here go by bare table name and the connector-level {@link TableId}
- * uses the logical database name as its schema part (workspace#40 D1) — which also makes the
- * default topic naming {@code <prefix>.<db>.<table>} match the sink contract of workspace#39.
+ * The schema part of every connector-level {@link TableId} is the CUBRID <b>owner</b> (ADR 0011
+ * D8, revising ADR 0006 D5): CUBRID's two-level namespace is {@code owner.table}, which puts the
+ * owner in the standard Debezium topic slot {@code <prefix>.<schemaName>.<tableName>} exactly like
+ * Oracle/PG. Schema discovery goes through the PUBLIC catalog views {@code db_class} /
+ * {@code db_attribute} / {@code db_index(_key)} with an owner filter (ADR 0011 D9) instead of the
+ * driver's {@link java.sql.DatabaseMetaData} — the driver ignores catalog/schema arguments
+ * entirely (ADR 0005) and would silently merge the columns of same-named tables across owners.
+ * The views filter rows by the caller's privileges, matching the per-table SELECT authorization
+ * model of ADR 0011 D1.
+ * <p>
+ * Owner names are stored uppercase in the catalog; the connector normalizes them to lowercase in
+ * table ids, topics and include lists — the same normal form CUBRID applies to identifiers.
  */
 public class CubridConnection extends JdbcConnection {
 
@@ -62,83 +70,143 @@ public class CubridConnection extends JdbcConnection {
     }
 
     /**
-     * The owner schema of a {@link TableId} here is the logical database name, not a CUBRID
-     * schema, so qualification would not parse — quote the bare table name only (POC runs as
-     * the owning user).
+     * Owner-qualified quoted form {@code "owner"."table"} (ADR 0011 D8 ③). Qualification is what
+     * lets a non-DBA account address another owner's granted table at all: a bare name resolves
+     * against the caller's own namespace and fails with {@code Unknown class "<user>.<table>"}.
      */
     @Override
     public String quotedTableIdString(TableId tableId) {
-        return QUOTED_CHARACTER + tableId.table() + QUOTED_CHARACTER;
+        return QUOTED_CHARACTER + tableId.schema() + QUOTED_CHARACTER
+                + "." + QUOTED_CHARACTER + tableId.table() + QUOTED_CHARACTER;
     }
 
     /**
-     * The 11.3 driver returns a JDBC-3.0-shaped (18 column) {@code getColumns} result set:
-     * {@code IS_AUTOINCREMENT} (index 23) does not exist and the unguarded read of the base
-     * implementation throws (ADR 0005 — this override is mandatory).
-     */
-    @Override
-    protected Optional<ColumnEditor> readTableColumn(ResultSet columnMetadata, TableId tableId, ColumnNameFilter columnFilter) throws SQLException {
-        final int metaColumnCount = columnMetadata.getMetaData().getColumnCount();
-        final String defaultValue = columnMetadata.getString(13);
-
-        final String columnName = columnMetadata.getString(4);
-        if (columnFilter == null || columnFilter.matches(tableId.catalog(), tableId.schema(), tableId.table(), columnName)) {
-            ColumnEditor column = Column.editor().name(columnName);
-            column.type(columnMetadata.getString(6));
-            column.length(columnMetadata.getInt(7));
-            if (columnMetadata.getObject(9) != null) {
-                column.scale(columnMetadata.getInt(9));
-            }
-            column.optional(isNullable(columnMetadata.getInt(11)));
-            column.position(columnMetadata.getInt(17));
-            if (metaColumnCount >= 23) {
-                column.autoIncremented("YES".equalsIgnoreCase(columnMetadata.getString(23)));
-            }
-            column.nativeType(resolveNativeType(column.typeName()));
-            column.jdbcType(resolveJdbcType(columnMetadata.getInt(5), column.nativeType()));
-            if (defaultValue != null) {
-                column.defaultValueExpression(defaultValue);
-            }
-            return Optional.of(column);
-        }
-        return Optional.empty();
-    }
-
-    /**
-     * Reads the relational model of one table by bare name and re-homes it under the given
-     * {@link TableId} (whose schema part is the logical database name).
+     * Reads the relational model of one {@code owner.table} from the PUBLIC catalog views
+     * (ADR 0011 D9). The owner filter is what makes same-named tables under different owners
+     * fully distinct — the previous driver-metadata path merged their columns silently.
      */
     public Optional<Table> readTable(TableId tableId) throws SQLException {
-        final DatabaseMetaData metadata = connection().getMetaData();
         final List<Column> columns = new ArrayList<>();
-        try (ResultSet rs = metadata.getColumns(null, null, tableId.table(), null)) {
-            while (rs.next()) {
-                readTableColumn(rs, tableId, null).ifPresent(editor -> columns.add(editor.create()));
+        try (PreparedStatement ps = connection().prepareStatement(
+                "SELECT attr_name, data_type, prec, scale, is_nullable, def_order, default_value"
+                        + " FROM db_attribute"
+                        + " WHERE owner_name = UPPER(?) AND class_name = ? AND attr_type = 'INSTANCE'"
+                        + " ORDER BY def_order")) {
+            ps.setString(1, tableId.schema());
+            ps.setString(2, tableId.table());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    final String typeName = rs.getString(2);
+                    final ColumnEditor column = Column.editor()
+                            .name(rs.getString(1))
+                            .type(typeName)
+                            .jdbcType(jdbcTypeFor(typeName))
+                            .length(rs.getInt(3))
+                            .scale(rs.getInt(4))
+                            .optional("YES".equalsIgnoreCase(rs.getString(5)))
+                            .position(rs.getInt(6) + 1);
+                    final String defaultValue = rs.getString(7);
+                    if (defaultValue != null) {
+                        column.defaultValueExpression(defaultValue);
+                    }
+                    columns.add(column.create());
+                }
             }
         }
         if (columns.isEmpty()) {
             return Optional.empty();
         }
-        columns.sort(Comparator.comparingInt(Column::position));
-        final List<String> pkNames = readPrimaryKeyNames(metadata, tableId);
         return Optional.of(Table.editor()
                 .tableId(tableId)
                 .addColumns(columns)
-                .setPrimaryKeyNames(pkNames)
+                .setPrimaryKeyNames(readPrimaryKeyNames(tableId))
                 .create());
     }
 
+    private List<String> readPrimaryKeyNames(TableId tableId) throws SQLException {
+        final List<String> pkNames = new ArrayList<>();
+        try (PreparedStatement ps = connection().prepareStatement(
+                "SELECT k.key_attr_name"
+                        + " FROM db_index i, db_index_key k"
+                        + " WHERE i.owner_name = UPPER(?) AND i.class_name = ? AND i.is_primary_key = 'YES'"
+                        + " AND k.owner_name = i.owner_name AND k.class_name = i.class_name"
+                        + " AND k.index_name = i.index_name"
+                        + " ORDER BY k.key_order")) {
+            ps.setString(1, tableId.schema());
+            ps.setString(2, tableId.table());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    pkNames.add(rs.getString(1));
+                }
+            }
+        }
+        return pkNames;
+    }
+
     /**
-     * Enumerates the user tables from the catalog, re-homed under the logical database name
-     * (the driver ignores catalog/schema metadata filters entirely — ADR 0005).
+     * Maps a {@code db_attribute.data_type} string to a {@code java.sql.Types} constant, mirroring
+     * what the JDBC driver reports for the same column (measured — {@code docs/type-support.md}).
+     * The decoder and the value converters key off this jdbcType; the typeName keeps the catalog
+     * string, which is what distinguishes MONETARY from DOUBLE and JSON from STRING (the
+     * unsupported-type guard of ADR 0008's spirit must use the typeName, never the jdbcType).
      */
-    public java.util.Set<TableId> readUserTableIds(String logicalDatabase) throws SQLException {
+    static int jdbcTypeFor(String dataType) {
+        switch (dataType.toUpperCase(Locale.ROOT)) {
+            case "SHORT":
+                return Types.SMALLINT;
+            case "INTEGER":
+                return Types.INTEGER;
+            case "BIGINT":
+                return Types.BIGINT;
+            case "NUMERIC":
+                return Types.NUMERIC;
+            case "FLOAT":
+                return Types.REAL;
+            case "DOUBLE":
+            case "MONETARY":
+                return Types.DOUBLE;
+            case "CHAR":
+                return Types.CHAR;
+            case "STRING":
+            case "ENUM":
+            case "JSON":
+                return Types.VARCHAR;
+            case "DATE":
+                return Types.DATE;
+            case "TIME":
+                return Types.TIME;
+            case "TIMESTAMP":
+            case "DATETIME":
+            case "TIMESTAMPTZ":
+            case "TIMESTAMPLTZ":
+            case "DATETIMETZ":
+            case "DATETIMELTZ":
+                return Types.TIMESTAMP;
+            case "BIT":
+                return Types.BINARY;
+            case "VARBIT":
+                return Types.VARBINARY;
+            case "BLOB":
+                return Types.BLOB;
+            case "CLOB":
+                return Types.CLOB;
+            default: // SET / MULTISET / SEQUENCE and anything the matrix does not know
+                return Types.OTHER;
+        }
+    }
+
+    /**
+     * Enumerates the user tables visible to the caller, owner-qualified (ADR 0011 D8). The PUBLIC
+     * view filters rows by the caller's privileges, so a restricted account only sees what it was
+     * granted.
+     */
+    public java.util.Set<TableId> readUserTableIds() throws SQLException {
         final java.util.Set<TableId> tableIds = new java.util.HashSet<>();
         try (java.sql.Statement stmt = connection().createStatement();
                 ResultSet rs = stmt.executeQuery(
-                        "SELECT class_name FROM db_class WHERE is_system_class = 'NO' AND class_type = 'CLASS'")) {
+                        "SELECT owner_name, class_name FROM db_class WHERE is_system_class = 'NO' AND class_type = 'CLASS'")) {
             while (rs.next()) {
-                tableIds.add(new TableId(null, logicalDatabase, rs.getString(1)));
+                tableIds.add(new TableId(null, rs.getString(1).toLowerCase(Locale.ROOT), rs.getString(2)));
             }
         }
         return tableIds;
@@ -165,26 +233,32 @@ public class CubridConnection extends JdbcConnection {
     }
 
     /**
-     * Maps the {@code classoid} carried by every {@code cubrid_log} DML item to its table name.
+     * Maps the {@code classoid} carried by every {@code cubrid_log} DML item to its owner-qualified
+     * table id.
      * <p>
      * The engine emits the classoid as the raw 8-byte memcpy of its {@code OID} struct
      * ({@code pageid int32 | slotid int16 | volid int16}, little-endian), and the JDBC driver
      * exposes the same OID through {@code _db_class.class_of} as {@code @pageid|slotid|volid} —
      * verified against the P0 harness dumps (workspace#40).
+     * <p>
+     * {@code _db_class} is DBA-only; this last DBA dependency is removed by the in-band relation
+     * dictionary (ADR 0011 D4, workspace#70), which replaces this lookup entirely.
      */
-    public Map<Long, String> readClassOidMap() throws SQLException {
-        final Map<Long, String> map = new HashMap<>();
+    public Map<Long, TableId> readClassOidTableIds() throws SQLException {
+        final Map<Long, TableId> map = new HashMap<>();
         try (java.sql.Statement stmt = connection().createStatement();
-                ResultSet rs = stmt.executeQuery("SELECT class_of, class_name FROM _db_class")) {
+                ResultSet rs = stmt.executeQuery("SELECT class_of, owner.name, class_name FROM _db_class")) {
             while (rs.next()) {
                 final Object oid = rs.getObject(1);
-                final String name = rs.getString(2);
+                final String owner = rs.getString(2);
+                final String name = rs.getString(3);
                 if (oid instanceof CUBRIDOID cubridOid) {
                     final String[] parts = cubridOid.getOidString().substring(1).split("\\|");
                     final long pageId = Long.parseLong(parts[0]);
                     final long slotId = Long.parseLong(parts[1]);
                     final long volId = Long.parseLong(parts[2]);
-                    map.put((volId << 48) | (slotId << 32) | pageId, name);
+                    map.put((volId << 48) | (slotId << 32) | pageId,
+                            new TableId(null, owner.toLowerCase(Locale.ROOT), name));
                 }
             }
         }

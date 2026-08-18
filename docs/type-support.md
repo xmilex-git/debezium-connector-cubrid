@@ -48,6 +48,15 @@ ClickHouse sink 측 참고(HTAP 스택): DATETIME/TIMESTAMP를 `DateTime64(3,'UT
 
 주의: 미지원 판별은 `jdbcType`이 아니라 **`typeName`** 으로 해야 한다 — MONETARY(→DOUBLE)·JSON(→VARCHAR)·TZ 계열(→TIMESTAMP)은 jdbcType이 지원 타입과 겹친다.
 
+### typeName의 출처 (workspace#69 이후)
+
+스키마 발견이 JDBC 드라이버 메타데이터에서 PUBLIC 카탈로그 뷰 `db_attribute`로 바뀌어(ADR 0011 D9), 커넥터 `Column.typeName()`은 이제 **카탈로그 `data_type` 문자열**이다. jdbcType은 드라이버 보고를 미러링해 유지된다(`CubridConnection.jdbcTypeFor`, 단위 테스트 고정). 실측 문자열(CUBRID 11.5):
+
+- 지원: `SHORT`(=SMALLINT) · `INTEGER` · `BIGINT` · `NUMERIC` · `FLOAT` · `DOUBLE` · `CHAR` · `STRING`(=VARCHAR) · `DATE` · `TIME` · `TIMESTAMP` · `DATETIME` · `ENUM`
+- 미지원: `MONETARY` · `BIT` · `VARBIT`(=BIT VARYING) · `TIMESTAMPTZ` · `TIMESTAMPLTZ` · `DATETIMETZ` · `DATETIMELTZ` · `SET` · `MULTISET` · `SEQUENCE`(=LIST) · `BLOB` · `CLOB` · `JSON`
+
+미지원 fail-fast 가드(workspace#73)는 이 카탈로그 문자열을 기준으로 판별하면 된다 — 드라이버 typeName과 달리 전부 상호 구별된다.
+
 ## 후속
 
 - 캡처 대상 테이블에 미지원 타입 컬럼이 있으면 커넥터가 기동 시 fail-fast하는 가드(DDL halt와 같은 정신, ADR 0008)는 workspace#58의 후속 티켓으로 재단.

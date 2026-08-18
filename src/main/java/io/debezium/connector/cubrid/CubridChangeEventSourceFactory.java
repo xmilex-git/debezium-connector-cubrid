@@ -69,9 +69,9 @@ public class CubridChangeEventSourceFactory implements ChangeEventSourceFactory<
 
     @Override
     public Optional<IncrementalSnapshotChangeEventSource<CubridPartition, ? extends DataCollectionId>> getIncrementalSnapshotChangeEventSource(CubridOffsetContext offsetContext,
-                                                                                                                                              SnapshotProgressListener<CubridPartition> snapshotProgressListener,
-                                                                                                                                              DataChangeEventListener<CubridPartition> dataChangeEventListener,
-                                                                                                                                              NotificationService<CubridPartition, CubridOffsetContext> notificationService) {
+                                                                                                                                               SnapshotProgressListener<CubridPartition> snapshotProgressListener,
+                                                                                                                                               DataChangeEventListener<CubridPartition> dataChangeEventListener,
+                                                                                                                                               NotificationService<CubridPartition, CubridOffsetContext> notificationService) {
         // Incremental snapshots are out of scope for the POC.
         return Optional.empty();
     }

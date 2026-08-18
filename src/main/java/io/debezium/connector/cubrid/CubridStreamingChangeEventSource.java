@@ -7,7 +7,6 @@ package io.debezium.connector.cubrid;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -463,9 +462,7 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
     }
 
     private Map<Long, TableId> readClassOidTableIds() throws Exception {
-        final Map<Long, TableId> result = new HashMap<>();
-        connection.readClassOidMap().forEach(
-                (classoid, tableName) -> result.put(classoid, new TableId(null, connectorConfig.getDatabaseName(), tableName)));
+        final Map<Long, TableId> result = connection.readClassOidTableIds();
         LOGGER.info("Resolved {} classoid -> table mappings from _db_class", result.size());
         return result;
     }

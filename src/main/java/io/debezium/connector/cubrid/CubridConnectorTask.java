@@ -24,7 +24,6 @@ import io.debezium.connector.common.BaseSourceTask;
 import io.debezium.connector.common.CdcSourceTaskContext;
 import io.debezium.connector.common.DebeziumHeaderProducer;
 import io.debezium.document.DocumentReader;
-import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.jdbc.DefaultMainConnectionProvidingConnectionFactory;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
@@ -34,6 +33,7 @@ import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.signal.SignalProcessor;
 import io.debezium.pipeline.spi.Offsets;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.snapshot.SnapshotterService;
@@ -97,7 +97,7 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
         // Non-historized schema bootstrap (Postgres model): read the captured tables' structure
         // from the database on every start, so a restart that skips the snapshot phase can stream.
         try {
-            for (TableId tableId : dataConnection.readUserTableIds(connectorConfig.getDatabaseName())) {
+            for (TableId tableId : dataConnection.readUserTableIds()) {
                 if (connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
                     dataConnection.readTable(tableId).ifPresent(schema::refresh);
                 }

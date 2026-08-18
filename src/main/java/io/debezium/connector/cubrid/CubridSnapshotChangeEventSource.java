@@ -10,7 +10,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -115,7 +114,7 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
 
     @Override
     protected Set<TableId> getAllTableIds(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> ctx) throws Exception {
-        final Set<TableId> tableIds = connection.readUserTableIds(connectorConfig.getDatabaseName());
+        final Set<TableId> tableIds = connection.readUserTableIds();
         LOGGER.info("Found user tables: {}", tableIds);
         return tableIds;
     }
@@ -134,7 +133,8 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
 
     @Override
     protected void determineSnapshotOffset(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> ctx,
-                                           CubridOffsetContext previousOffset) throws Exception {
+                                           CubridOffsetContext previousOffset)
+            throws Exception {
         if (previousOffset != null && previousOffset.getAnchorLsa().isAvailable()) {
             // Interrupted-snapshot rerun (ADR 0009 D2 ④): reuse the original barrier. The rescan's
             // view is established now, i.e. after that (older) barrier, so the ordering invariant

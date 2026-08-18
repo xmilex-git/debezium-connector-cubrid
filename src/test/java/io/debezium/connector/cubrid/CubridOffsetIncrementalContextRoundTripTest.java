@@ -43,7 +43,7 @@ class CubridOffsetIncrementalContextRoundTripTest {
 
         @SuppressWarnings("unchecked")
         final IncrementalSnapshotContext<TableId> incremental = (IncrementalSnapshotContext<TableId>) offset.getIncrementalSnapshotContext();
-        incremental.addDataCollectionNamesToSnapshot("corr-1", List.of("htapdb.t_order"), List.of(), "");
+        incremental.addDataCollectionNamesToSnapshot("corr-1", List.of("dba.t_order"), List.of(), "");
         assertTrue(incremental.snapshotRunning());
 
         final Map<String, ?> stored = offset.getOffset();

@@ -108,7 +108,7 @@ public class CubridLogClient {
         Pointer head = listRef.getValue();
         List<RawLogItem> items = new ArrayList<>(Math.max(sizeRef.getValue(), 0));
         try {
-            for (Pointer p = head; p != null; ) {
+            for (Pointer p = head; p != null;) {
                 CubridLogItemStruct node = new CubridLogItemStruct(p);
                 node.read();
                 items.add(copyItem(node));
