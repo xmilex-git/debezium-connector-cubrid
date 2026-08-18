@@ -154,6 +154,21 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         void publish(TxnBuffer buffer, RawLogItem commitDcl) throws InterruptedException;
     }
 
+    private CubridOffsetContext effectiveOffsetContext;
+
+    @Override
+    public void init(CubridOffsetContext offsetContext) {
+        // The coordinator hands this to SignalProcessor.setContext(): without it the
+        // partition->offset map stays empty and every external (Kafka/JMX/File) signal is
+        // silently dropped in getOffsets() — the blocking-snapshot signal never fires (#65).
+        this.effectiveOffsetContext = offsetContext;
+    }
+
+    @Override
+    public CubridOffsetContext getOffsetContext() {
+        return effectiveOffsetContext;
+    }
+
     @Override
     public void execute(ChangeEventSourceContext context, CubridPartition partition, CubridOffsetContext offsetContext) throws InterruptedException {
         final CubridLogClient client = new CubridLogClient();
@@ -190,6 +205,18 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                     System::currentTimeMillis);
 
             while (context.isRunning()) {
+                // Blocking-snapshot pause handshake (ADR 0009 D4, binlog-connector pattern):
+                // the coordinator's doBlockingSnapshot() blocks on waitStreamingPaused() until
+                // this acknowledgment, runs the snapshot, then resumes us. Pausing only at a
+                // batch boundary keeps the anchor and in-flight buffers untouched across the
+                // pause; extract() returns periodically via TIMER items, bounding the latency.
+                if (context.isPaused()) {
+                    LOGGER.info("Streaming paused for an on-demand blocking snapshot");
+                    context.streamingPaused();
+                    context.waitSnapshotCompletion();
+                    LOGGER.info("Streaming resumed after the blocking snapshot");
+                }
+
                 final long batchInLsaRaw = cursor;
 
                 final CubridLogClient.ExtractBatch batch = client.extract(cursor);

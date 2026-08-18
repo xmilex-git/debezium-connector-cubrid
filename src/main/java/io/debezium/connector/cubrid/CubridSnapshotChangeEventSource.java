@@ -25,6 +25,7 @@ import io.debezium.connector.cubrid.jna.CubridLogClient;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.notification.NotificationService;
+import io.debezium.pipeline.signal.actions.snapshotting.SnapshotConfiguration;
 import io.debezium.pipeline.source.SnapshottingTask;
 import io.debezium.pipeline.source.spi.SnapshotProgressListener;
 import io.debezium.relational.RelationalSnapshotChangeEventSource;
@@ -81,7 +82,28 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
         // blocks DDL for the duration of the scan, and large tables prolong that window.
         connection.connection().setAutoCommit(false);
         connection.connection().setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-        LOGGER.info("Snapshot connection promoted to REPEATABLE READ");
+        // Discard whatever view the shared main connection may still hold (it stays in
+        // autoCommit=false after a previous snapshot): a blocking snapshot skips
+        // determineSnapshotOffset, so without this its scan could read a stale view predating
+        // the changes it was asked to re-read. The next statement opens a fresh view.
+        connection.connection().commit();
+        LOGGER.info("Snapshot connection promoted to REPEATABLE READ (fresh view)");
+    }
+
+    @Override
+    public SnapshottingTask getBlockingSnapshottingTask(CubridPartition partition, CubridOffsetContext previousOffset,
+                                                        SnapshotConfiguration snapshotConfiguration) {
+        // The blocking-snapshot path (ADR 0009 D4) skips determineSnapshotOffset and reuses the
+        // live streaming offset context as-is, so re-assert the D4 invariant here: snapshot rows
+        // must carry source.lsn = 0 so replayed CDC always wins in the ReplacingMergeTree. The
+        // sourceInfo still holds the last emitted event counter; streaming re-stamps it per
+        // event on resume, so zeroing it while streaming is paused is safe.
+        if (previousOffset != null) {
+            previousOffset.setEventSeq(0);
+            LOGGER.info("Blocking snapshot reuses anchor {} as its barrier; snapshot rows carry seq 0",
+                    previousOffset.getAnchorLsa());
+        }
+        return super.getBlockingSnapshottingTask(partition, previousOffset, snapshotConfiguration);
     }
 
     @Override
@@ -110,6 +132,8 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
             // Interrupted-snapshot rerun (ADR 0009 D2 ④): reuse the original barrier. The rescan's
             // view is established now, i.e. after that (older) barrier, so the ordering invariant
             // below holds trivially and streaming replay from the barrier covers every difference.
+            // (The on-demand blocking snapshot never reaches this method — core skips step 4 for
+            // onDemand tasks; its D4 invariant is re-asserted in getBlockingSnapshottingTask.)
             ctx.offset = previousOffset;
             return;
         }
