@@ -37,6 +37,8 @@ ClickHouse sink 측 참고(HTAP 스택): DATETIME/TIMESTAMP를 `DateTime64(3,'UT
 
 `table.include.list`의 캡처 대상 테이블에 아래 타입 컬럼이 있으면 안 된다. **일부는 에러 없이 데이터가 조용히 소실되므로**(아래 위험 열) 반드시 세팅 가이드 체크리스트에 넣는다.
 
+**fail-fast 가드 (workspace#73)**: 커넥터는 기동 시 스키마 bootstrap에서 captured 테이블 전 컬럼의 typeName을 검사해, 위 "지원 (1.0)" 목록 밖의 타입이 하나라도 있으면 **기동을 거부**한다(`UnsupportedTypeGuard`, DDL halt와 같은 정신 — ADR 0008). 에러 메시지는 `owner.table.column (TYPE)` 형식으로 모든 위반 컬럼을 나열하고 이 문서를 가리킨다. 판별은 **allow-list**다: 아래 미지원 목록에 없는 미지의 타입도 무성 통과 대신 기동 실패한다. include list는 literal 필수(ADR 0011 D10)이므로 이후 blocking snapshot이 만질 테이블도 전부 기동 시점에 검사가 끝난다. 단위 테스트: `UnsupportedTypeGuardTest`.
+
 | CUBRID 타입 | 실측 동작 | 위험 |
 |---|---|---|
 | MONETARY | JDBC가 `DOUBLE`(8)로 보고하는데 log는 통화기호 문자열(`$123456789.99`)을 실음 → 디코더의 DOUBLE 경로가 문자열 첫 8바이트를 IEEE754로 읽음 | **무성 값 훼손** (garbage double) |
@@ -55,9 +57,8 @@ ClickHouse sink 측 참고(HTAP 스택): DATETIME/TIMESTAMP를 `DateTime64(3,'UT
 - 지원: `SHORT`(=SMALLINT) · `INTEGER` · `BIGINT` · `NUMERIC` · `FLOAT` · `DOUBLE` · `CHAR` · `STRING`(=VARCHAR) · `DATE` · `TIME` · `TIMESTAMP` · `DATETIME` · `ENUM`
 - 미지원: `MONETARY` · `BIT` · `VARBIT`(=BIT VARYING) · `TIMESTAMPTZ` · `TIMESTAMPLTZ` · `DATETIMETZ` · `DATETIMELTZ` · `SET` · `MULTISET` · `SEQUENCE`(=LIST) · `BLOB` · `CLOB` · `JSON`
 
-미지원 fail-fast 가드(workspace#73)는 이 카탈로그 문자열을 기준으로 판별하면 된다 — 드라이버 typeName과 달리 전부 상호 구별된다.
+미지원 fail-fast 가드(workspace#73, `UnsupportedTypeGuard`)는 이 카탈로그 문자열을 기준으로 판별한다 — 드라이버 typeName과 달리 전부 상호 구별된다.
 
 ## 후속
 
-- 캡처 대상 테이블에 미지원 타입 컬럼이 있으면 커넥터가 기동 시 fail-fast하는 가드(DDL halt와 같은 정신, ADR 0008)는 workspace#58의 후속 티켓으로 재단.
-- 엔진이 컬렉션·JSON을 supplemental log에 직렬화하게 되면(엔진 보강) 이 매트릭스를 갱신한다.
+- 엔진이 컬렉션·JSON을 supplemental log에 직렬화하게 되면(엔진 보강) 이 매트릭스와 `UnsupportedTypeGuard`의 allow-list를 함께 갱신한다.

@@ -96,10 +96,15 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
 
         // Non-historized schema bootstrap (Postgres model): read the captured tables' structure
         // from the database on every start, so a restart that skips the snapshot phase can stream.
+        // The unsupported-type guard (workspace#73) runs here because the include list is a fixed
+        // literal (ADR 0011 D10): every table a later blocking snapshot may touch is checked now.
         try {
             for (TableId tableId : dataConnection.readUserTableIds()) {
                 if (connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
-                    dataConnection.readTable(tableId).ifPresent(schema::refresh);
+                    dataConnection.readTable(tableId).ifPresent(table -> {
+                        UnsupportedTypeGuard.checkTable(table);
+                        schema.refresh(table);
+                    });
                 }
             }
         }
