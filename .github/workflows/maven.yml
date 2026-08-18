@@ -1,0 +1,33 @@
+# CI skeleton (workspace#56). Mirrors the local build flags: the module does not
+# yet pass debezium-parent's checkstyle/format/revapi gates — enabling them is
+# tracked as repo hardening follow-up, not silently on.
+name: Build and test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      # cubrid-jdbc is not on Maven Central (ADR 0005 D7 host-install driver).
+      # CI uses the public ftp.cubrid.org build and overrides version.cubrid.jdbc;
+      # local dev keeps the CUBRID-install jar (see README).
+      - name: Install CUBRID JDBC driver into local repo
+        run: |
+          curl -fsSL -o cubrid-jdbc.jar \
+            https://ftp.cubrid.org/CUBRID_Drivers/JDBC_Driver/JDBC-11.3.2.0053-cubrid.jar
+          mvn -B -q install:install-file -Dfile=cubrid-jdbc.jar \
+            -DgroupId=cubrid -DartifactId=cubrid-jdbc -Dversion=11.3.2.0053 -Dpackaging=jar
+      - name: Build and run unit tests
+        run: |
+          mvn -B verify -Dversion.cubrid.jdbc=11.3.2.0053 \
+            -Dcheckstyle.skip -Dformat.skip -Drevapi.skip -Denforcer.skip

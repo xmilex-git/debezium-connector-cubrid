@@ -5,7 +5,7 @@
         <groupId>io.debezium</groupId>
         <artifactId>debezium-parent</artifactId>
         <version>3.0.0.Final</version>
-        <relativePath>../debezium-parent/pom.xml</relativePath>
+        <relativePath/>
     </parent>
 
     <modelVersion>4.0.0</modelVersion>
@@ -16,6 +16,8 @@
 
     <properties>
         <version.jna>5.14.0</version.jna>
+        <!-- host-install driver (ADR 0005 D7); CI overrides with the public ftp.cubrid.org build -->
+        <version.cubrid.jdbc>11.3.2.0058</version.cubrid.jdbc>
     </properties>
 
     <dependencies>
@@ -39,7 +41,7 @@
         <dependency>
             <groupId>cubrid</groupId>
             <artifactId>cubrid-jdbc</artifactId>
-            <version>11.3.2.0058</version>
+            <version>${version.cubrid.jdbc}</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
