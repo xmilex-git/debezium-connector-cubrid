@@ -29,6 +29,8 @@
 
 시간 타입 공통: 값은 wall-clock으로 통과하며 세션/서버 타임존 해석은 하지 않는다(`CubridValueConverters` — snapshot·streaming 동일 자릿수 계약, workspace#39).
 
+> **예고 — temporal 계약 개정(workspace#76)**: 위 wall-clock 통과 계약은 폐기가 결정되었다. 새 송출 계약의 기준 문서는 [HTAP CDC wire v2 명세](https://github.com/xmilex-git/workspace/blob/main/docs/htap-cdc-wire-v2.md)(workspace#80)이며, 엔진 workspace#84·커넥터 workspace#85 구현과 함께 발효된다(lockstep — 구엔진과 조합 불가). 이 표의 temporal 행·아래 TZ 4종 미지원 행은 #85/#86에서 개정된다.
+
 corpus가 잡은 버그: streaming 디코더의 FLOAT 경로가 삼항식 numeric promotion으로 float을 `Double`로 승격시켜 FLOAT32 스키마를 깨뜨렸다(snapshot은 `Float` — 경로 간 불일치). 경계 corpus 도입 커밋에서 수정.
 
 ClickHouse sink 측 참고(HTAP 스택): DATETIME/TIMESTAMP를 `DateTime64(3,'UTC')`에 담으면 CUBRID 전 범위(0001–9999)가 DateTime64 범위(1900–2299)를 벗어난다 — 범위 밖 값이 필요하면 sink 컬럼을 String으로. e2e corpus는 DateTime64 범위 내 경계값으로 0 mismatch를 검증했다.
