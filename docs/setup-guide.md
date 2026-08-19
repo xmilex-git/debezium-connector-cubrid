@@ -31,6 +31,11 @@ CUBRID → Debezium → Kafka → ClickHouse 파이프라인을 고객사에 세
       또는 버퍼 상한 opt-in 여부 결정 (§7.2)
 - [ ] supplemental log 오버헤드(bulk +2.4%·단일행 +0.5%, 인스턴스 전체 — 대상을 좁혀도
       안 줄어든다)를 고객이 인지했는가
+- [ ] **CDC 포트(`cubrid_port_id`)가 일반 사용자망에 노출되지 않는가** — CDC 포트는
+      서버 보안 경계가 아니다(인증·TLS 없음, before-image까지 열림 — support-scope.md
+      §5-13). 전용 관리망에 두거나 firewall allowlist로 **Connect 워커 호스트만** 허용해야
+      한다. 엔진은 localhost-bind를 지원하지 않으므로(0.0.0.0 bind) OS/네트워크 계층에서
+      강제한다. 격리 확인 절차·실증: e2e `run-port-isolation-denial.sh`
 
 ## 2. CUBRID 엔진 설정
 
@@ -75,6 +80,17 @@ GRANT SELECT ON dba.t_item  TO cdc_user;
 | CDC extraction (서버 직결) | 커넥터 `cdc.port` = 서버 `cubrid_port_id` | 1523 |
 
 두 포트 모두 Connect 워커 → CUBRID 호스트 방향으로 열려 있어야 한다.
+
+**CDC 포트는 반드시 격리한다(파일럿 필수 전제조건, 권고 아님).** 이 포트에는 서버측
+인증·인가·전송 암호화가 없어, **닿을 수 있는** raw client는 일반 DB 로그인만으로 붙어
+변경 스트림 전체(before-image 포함)를 읽는다(support-scope.md §5-13, 실증
+e2e `run-port-isolation-denial.sh`). 엔진은 포트를 `0.0.0.0`으로 bind하고 localhost-bind
+설정이 없으므로, 격리는 OS/네트워크 계층에서 강제한다:
+
+- CDC 포트를 **전용 관리망**에 두거나, firewall allowlist로 **Connect 워커 호스트만**
+  허용한다. 일반 사용자망 노출 금지.
+- (선택, 심층 방어) mTLS proxy/TLS tunnel 경유로만 도달하게 한다.
+- JDBC(broker) 포트도 캡처 대상 스키마·데이터가 흐르므로 동일 원칙으로 최소 노출한다.
 
 ## 3. ClickHouse 준비
 

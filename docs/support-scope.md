@@ -108,7 +108,8 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 7. **권한 모델의 한계 (정직성 명기, ADR 0011 D11)** — 권한 검사는 세션 시작 1회이며
    스트리밍 중 `REVOKE`는 진행 중 세션을 멈추지 못한다(다음 재연결부터 유효). 강제력은
    CUBRID의 다른 권한과 동일한 클라이언트측 수준이다. 또한 supplemental log는 행 이력
-   (before image 포함)을 담으므로 SELECT 권한만으로 이력이 열린다.
+   (before image 포함)을 담으므로 SELECT 권한만으로 이력이 열린다. **따라서
+   CDC 포트는 서버 보안 경계가 아니다 — 망 격리가 필수다(§5-13).**
 8. **CDC 대상의 영속 표식이 DB에 없다** — 캡처 대상 집합은 커넥터 설정
    (`table.include.list`)에서 나와 세션마다 선언되는 휘발성 필터다. "이 DB의 CDC 대상"의
    유일한 출처는 커넥터 설정이다(Oracle의 supplemental log 절, PG의 publication과 다름).
@@ -128,6 +129,20 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
     어긋난다. 커넥터는 기동 시 `db_root`의 codeset을 확인해 **UTF-8이 아니면 기동을
     거부**한다(위반 charset 명시 + 조치 안내). 비 UTF-8 DB를 캡처하려면 UTF-8 locale로
     생성한 DB로 이관(unloaddb/loaddb)해야 한다. codeset negotiation은 post-1.0.
+
+13. **CDC 포트는 서버 보안 경계가 아님 — 망 격리 필수 (P0-6, ADR 0011 D11)** — CDC
+    extraction 포트(`cubrid_port_id`)에는 서버측 인증·인가·전송 암호화가 없다:
+    START_SESSION은 identity/token을 싣지 않고, per-table SELECT 인가(§5-7)는 이미
+    권한 있는 계정에는 무의미하며 강제력은 클라이언트측이다. `cub_master`는 이 포트를
+    `INADDR_ANY`(0.0.0.0)로 bind하므로(엔진 `tcp.c`) **localhost-bind 설정도 없다**.
+    실증(e2e `run-port-isolation-denial.sh`): 포트에 **닿는** raw CDC client는 일반 DB
+    로그인만으로 붙어 변경 스트림 전체(UPDATE 후상·INSERT·**DELETE 전상 before-image**)를
+    읽고, 포트에 **못 닿으면**(필터/무경로) `CONNECT rc=-10`으로 차단된다 — 임의 client와
+    전체 이력 사이를 막는 유일한 것은 **망 도달성**이다. JDBC SELECT gate는 운영 편의
+    검사이지 보안 경계가 아니다. **그러므로 파일럿에서 CDC 포트 망 격리는 권고가 아니라
+    필수 전제조건이다**: 포트를 전용 관리망에 두거나 firewall allowlist로 Connect 워커
+    호스트만 허용하고 일반 사용자망 노출을 금지한다(엔진이 localhost-bind를 못 하므로
+    OS/네트워크 계층에서 강제). 서버측 인증·TLS·replay 방지는 post-1.0(ADR 0011 D11).
 
 ## 6. 요구 버전·엔진 기능
 
