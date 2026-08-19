@@ -259,6 +259,21 @@ public class CubridConnectorConfig extends RelationalDatabaseConnectorConfig {
         return extractionTableNames;
     }
 
+    /**
+     * The include list as {@link io.debezium.relational.TableId}s — the literal routing and
+     * bootstrap-verification set (workspace#82 D4): every announce and DML route is matched
+     * against exactly these ids, and task startup fails unless each one exists with a loadable
+     * schema.
+     */
+    public java.util.List<io.debezium.relational.TableId> getExtractionTableIds() {
+        final java.util.List<io.debezium.relational.TableId> ids = new java.util.ArrayList<>(extractionTableNames.size());
+        for (String name : extractionTableNames) {
+            final int dot = name.indexOf('.');
+            ids.add(new io.debezium.relational.TableId(null, name.substring(0, dot), name.substring(dot + 1)));
+        }
+        return java.util.List.copyOf(ids);
+    }
+
     /** Test-only pause before the snapshot barrier capture; 0 = none (ADR 0009 D2 ②). */
     public long getSnapshotTestPauseBeforeBarrierMs() {
         return snapshotTestPauseBeforeBarrierMs;

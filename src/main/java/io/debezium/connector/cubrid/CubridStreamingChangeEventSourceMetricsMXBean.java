@@ -50,4 +50,16 @@ public interface CubridStreamingChangeEventSourceMetricsMXBean extends Streaming
 
     /** Message of the most recent HA halt; empty when none fired. */
     String getLastHaHaltReason();
+
+    /** Number of empty/half-empty relation-announce halts (workspace#82 D2); each one fails the task. */
+    long getEmptyAnnounceHaltCount();
+
+    /** Classoid of the most recent empty-announce halt; empty when none fired. */
+    String getLastEmptyAnnounceHaltClassoid();
+
+    /** Number of announce↔include-list mismatch halts (workspace#82 D5); each one fails the task. */
+    long getAnnounceIncludeMismatchHaltCount();
+
+    /** {@code owner.table} of the most recent announce↔include mismatch halt; empty when none fired. */
+    String getLastAnnounceIncludeMismatchTable();
 }

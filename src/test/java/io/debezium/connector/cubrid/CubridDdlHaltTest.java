@@ -28,8 +28,9 @@ import io.debezium.connector.cubrid.log.RawLogItem;
 import io.debezium.relational.TableId;
 
 /**
- * Unit tests for DDL halt (ADR 0008, workspace#63): a captured-table ALTER/DROP/RENAME/TRUNCATE
- * DDL item fails the stream fast (D1·D2), mid-stream CREATE TABLE only warns and counts (D3),
+ * Unit tests for DDL halt (ADR 0008, workspace#63; amended by workspace#82 D3): any TABLE
+ * ALTER/DROP/RENAME/TRUNCATE DDL item that reaches the connector fails the stream fast —
+ * unconditionally, with no dictionary or schema lookup — mid-stream CREATE TABLE only warns and counts (D3),
  * events committed before the DDL publish while the anchor never passes the DDL so a restart
  * re-halts deterministically (D4), and the error surface carries table + ddl_type + statement
  * without being retriable (D5).
@@ -146,11 +147,12 @@ class CubridDdlHaltTest {
         assertEquals(0, anchorSeq);
     }
 
-    @Test
-    void unassistedRestartHaltsAtTheSameDdlWithTheSameCounter() throws InterruptedException {
+    @ParameterizedTest(name = "ddl_type {0} = {1}")
+    @CsvSource({ "1, ALTER", "2, DROP", "3, RENAME", "4, TRUNCATE" })
+    void unassistedRestartHaltsAtTheSameDdlWithTheSameCounter(int ddlTypeCode, String ddlTypeName) throws InterruptedException {
         final RawLogItem[] items = {
                 insert(1, CAPTURED_CLASSOID), commit(1),
-                ddl(2, 2, CDC_TABLE, CAPTURED_CLASSOID, "DROP TABLE t1")
+                ddl(2, ddlTypeCode, CDC_TABLE, CAPTURED_CLASSOID, ddlTypeName + " TABLE t1 ...")
         };
         final DdlHaltException first = assertThrows(DdlHaltException.class, () -> runBatch(100, 200, items));
         final long counterAtHalt = state.counter;
@@ -192,13 +194,24 @@ class CubridDdlHaltTest {
         assertEquals(1, published.size());
     }
 
-    @Test
-    void nonCapturedTableDdlIsIgnored() throws InterruptedException {
-        runBatch(100, 200,
-                ddl(1, 1, CDC_TABLE, OTHER_CLASSOID, "ALTER TABLE other ADD COLUMN c INT"),
-                insert(2, CAPTURED_CLASSOID), commit(2));
+    // ---- workspace#82 D3: a TABLE DDL that reached the connector halts unconditionally ----
 
-        assertTrue(metrics.ddlHalts.isEmpty());
-        assertEquals(1, published.size());
+    @Test
+    void unannouncedTableDdlHaltsUnconditionally() {
+        // passing the server-side extraction filter proves the DDL concerns a capture target —
+        // no dictionary or schema lookup may veto the halt (#82 D3); the label degrades gracefully
+        final DdlHaltException e = assertThrows(DdlHaltException.class,
+                () -> runBatch(100, 200, ddl(1, 1, CDC_TABLE, OTHER_CLASSOID, "ALTER TABLE other ADD COLUMN c INT")));
+
+        assertTrue(e.getMessage().contains("unannounced classoid " + OTHER_CLASSOID), e.getMessage());
+        assertEquals(1, metrics.ddlHalts.size());
+    }
+
+    @Test
+    void nullClassoidTableDdlHaltsFailSafe() {
+        // no engine path emits a NULL-classoid TABLE DDL today (#75 code audit) — but if one ever
+        // arrives, the fail-safe default is halt, not skip (halt criteria: undecidable → halt)
+        assertThrows(DdlHaltException.class,
+                () -> runBatch(100, 200, ddl(1, 2, CDC_TABLE, 0, "DROP TABLE mystery")));
     }
 }

@@ -105,21 +105,15 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
 
         // Non-historized schema bootstrap (Postgres model): read the captured tables' structure
         // from the database on every start, so a restart that skips the snapshot phase can stream.
-        // The unsupported-type guard (workspace#73) runs here because the include list is a fixed
+        // Fail-fast (workspace#82 D4): every include-list entry must exist with a loadable schema
+        // — this is the only observation point for a table dropped or renamed while the connector
+        // was stopped (the server would silently filter its lagging log otherwise). The
+        // unsupported-type guard (workspace#73) runs here because the include list is a fixed
         // literal (ADR 0011 D10): every table a later blocking snapshot may touch is checked now.
-        try {
-            for (TableId tableId : dataConnection.readUserTableIds()) {
-                if (connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
-                    dataConnection.readTable(tableId).ifPresent(table -> {
-                        UnsupportedTypeGuard.checkTable(table);
-                        schema.refresh(table);
-                    });
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new io.debezium.DebeziumException("Failed to bootstrap the table schemas from the database", e);
-        }
+        bootstrapIncludedTables(connectorConfig.getExtractionTableIds(), dataConnection::readTable, table -> {
+            UnsupportedTypeGuard.checkTable(table);
+            schema.refresh(table);
+        });
 
         // Manual bean registration
         connectorConfig.getBeanRegistry().add(StandardBeanNames.CONFIGURATION, config);
@@ -192,6 +186,41 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
         coordinator.start(taskContext, this.queue, metadataProvider);
 
         return coordinator;
+    }
+
+    /** Reads one include-list table's relational model; a thrown SQLException is infrastructure failure. */
+    @FunctionalInterface
+    interface IncludedTableReader {
+        java.util.Optional<io.debezium.relational.Table> read(TableId tableId) throws SQLException;
+    }
+
+    /**
+     * Include-list bootstrap fail-fast (workspace#82 D4): every literal include entry must exist
+     * and load its schema, or startup fails non-retriably. This retires the "pre-include a table,
+     * CREATE it later" workflow (ADR 0011 amendment) — a missing entry is indistinguishable from
+     * a table dropped/renamed while the connector was stopped, which must halt, not silently skip.
+     */
+    static void bootstrapIncludedTables(List<TableId> includeTableIds, IncludedTableReader reader,
+                                        java.util.function.Consumer<io.debezium.relational.Table> refresher) {
+        for (TableId tableId : includeTableIds) {
+            final java.util.Optional<io.debezium.relational.Table> table;
+            try {
+                table = reader.read(tableId);
+            }
+            catch (SQLException e) {
+                throw new io.debezium.DebeziumException(
+                        "Failed to bootstrap the table schema of '" + tableId.identifier() + "' from the database", e);
+            }
+            if (table.isEmpty()) {
+                throw new io.debezium.DebeziumException(
+                        "'table.include.list' entry '" + tableId.identifier() + "' does not exist in the database "
+                                + "(or is not readable by this account) — a capture target must exist with a loadable "
+                                + "schema at startup; a table dropped or renamed while the connector was stopped is caught here. "
+                                + "Update 'table.include.list' to the current schema, then run the resnapshot procedure. "
+                                + "See the CUBRID connector setup guide, section 'Relation identity halt recovery'.");
+            }
+            refresher.accept(table.get());
+        }
     }
 
     @Override

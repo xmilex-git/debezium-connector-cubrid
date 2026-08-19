@@ -10,7 +10,7 @@ import static io.debezium.connector.cubrid.log.TestRawLogItems.insert;
 import static io.debezium.connector.cubrid.log.TestRawLogItems.relation;
 import static io.debezium.connector.cubrid.log.TestRawLogItems.timer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,8 +51,14 @@ class CubridRelationDictionaryTest {
     }
 
     private void runBatch(long batchInLsa, long batchOutLsa, RawLogItem... items) throws InterruptedException {
+        runBatch(tableId -> true, batchInLsa, batchOutLsa, items);
+    }
+
+    private void runBatch(java.util.function.Predicate<TableId> included, long batchInLsa, long batchOutLsa,
+                          RawLogItem... items)
+            throws InterruptedException {
         CubridStreamingChangeEventSource.processBatch(state, BufferPolicy.UNLIMITED, List.of(items), batchInLsa, batchOutLsa,
-                tableId -> true,
+                included,
                 (lsa, seq) -> {
                 },
                 (buffer, commitDcl) -> buffer.changes.forEach(c -> {
@@ -112,14 +118,52 @@ class CubridRelationDictionaryTest {
                 "the server announces before first use (#67); a miss means version skew (ADR 0011 D10)");
     }
 
-    @Test
-    void emptyNamesAnnounceMarksTheClassoidUnroutableInsteadOfErroring() throws InterruptedException {
-        // lagging log of an already-dropped class: announced with empty names (invalid_class)
-        runBatch(100, 200, relation(ORDER_OID, "", ""), insert(1, ORDER_OID), commit(1));
+    // ---- workspace#82 D2: empty/half-empty announce fails fast (S2 mid-session drop lag) ----
 
-        assertTrue(publishedTables.isEmpty(), "unroutable DML is skipped, not published");
-        assertEquals(2, state.counter, "but it stays counted — it is position-derived");
-        assertTrue(state.relationDictionary.containsKey(ORDER_OID));
-        assertNull(state.relationDictionary.get(ORDER_OID));
+    @Test
+    void emptyNamesAnnounceFailsFastInsteadOfSilentlySkipping() {
+        // lagging log of an already-dropped class: announced with empty names (invalid_class).
+        // Silently skipping its committed DML is exactly the S2 silent-divergence hole (#82 D2).
+        final DebeziumException e = assertThrows(DebeziumException.class,
+                () -> runBatch(100, 200, relation(ORDER_OID, "", ""), insert(1, ORDER_OID), commit(1)));
+
+        assertTrue(e.getMessage().contains("empty names"), e.getMessage());
+        assertTrue(e.getMessage().contains("resnapshot"), e.getMessage());
+        assertTrue(e.getMessage().contains("Relation identity halt recovery"), e.getMessage());
+        assertFalse(org.apache.kafka.connect.errors.RetriableException.class.isInstance(e), "must be non-retriable (D6)");
+        assertFalse(state.relationDictionary.containsKey(ORDER_OID), "a broken announce never enters the dictionary");
+    }
+
+    @Test
+    void halfEmptyAnnounceFailsFastToo() {
+        assertThrows(DebeziumException.class, () -> runBatch(100, 200, relation(ORDER_OID, "dba", "")));
+        setUp();
+        assertThrows(DebeziumException.class, () -> runBatch(100, 200, relation(ORDER_OID, "", "t_order")));
+    }
+
+    @Test
+    void commitsBeforeAnEmptyAnnouncePublishBeforeTheHalt() {
+        // DML→DROP lag: work committed before the lagging drop surfaces still publishes
+        assertThrows(DebeziumException.class, () -> runBatch(100, 200,
+                relation(ITEM_OID, "dba", "t_item"), insert(1, ITEM_OID), commit(1),
+                relation(ORDER_OID, "", "")));
+
+        assertEquals(List.of(new TableId(null, "dba", "t_item")), publishedTables);
+    }
+
+    // ---- workspace#82 D5: announce must be an include-list member (RENAME lag detection) ----
+
+    @Test
+    void announceOutsideTheIncludeListFailsFast() {
+        // DML→RENAME lag: the server resolves the classoid to its NEW name at extraction time,
+        // which is not in the include list — misattributing its changes would corrupt the sink
+        final TableId included = new TableId(null, "dba", "t_order");
+        final DebeziumException e = assertThrows(DebeziumException.class,
+                () -> runBatch(included::equals, 100, 200, relation(ORDER_OID, "dba", "t_order_renamed")));
+
+        assertTrue(e.getMessage().contains("dba.t_order_renamed"), e.getMessage());
+        assertTrue(e.getMessage().contains("table.include.list"), e.getMessage());
+        assertTrue(e.getMessage().contains("resnapshot"), e.getMessage());
+        assertFalse(state.relationDictionary.containsKey(ORDER_OID));
     }
 }

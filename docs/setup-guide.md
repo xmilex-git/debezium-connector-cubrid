@@ -206,6 +206,9 @@ wall-clock passthrough — support-scope.md §5-10).
 - `table.include.list`는 **필수**이고, `owner.table` **literal**만 허용한다(regex·
   와일드카드 불가 — 기동 거부). 이 목록이 곧 서버 extraction 대상이자 SELECT 권한
   검사 목록이다. **목록 변경은 resnapshot 필수**(§8.4).
+- 기동 시 목록의 **전 엔트리가 실재하고 스키마 로드에 성공해야 한다** — 하나라도
+  없으면 기동 거부(§8.7). "미리 include에 넣어 두고 나중에 CREATE" 워크플로는
+  지원되지 않는다: 테이블을 만든 **후** 목록에 추가한다(§8.1 테이블 추가 절차).
 - 토픽은 `<topic.prefix>.<owner>.<table>`로 생성된다. owner만 다른 동명 테이블은
   서로 다른 토픽으로 분리 캡처된다.
 - `signal.kafka.poll.timeout.ms=1000`은 필수다(기본 0이면 signal을 사실상 못 읽는다).
@@ -280,6 +283,8 @@ wall-clock passthrough — support-scope.md §5-10).
 | `AbandonedTransactionCount` / `AbandonedTransactionIds` | retention 초과 abandon | **>0 즉시 경보** — 유실 발생, §8.3 |
 | DDL halt counter / 마지막 halt 원인(테이블·문장) | DDL halt 발동 | **>0 즉시 경보** — §8.1 |
 | HA halt 관련 2종 | 노드 전환/비-master 감지 | **>0 즉시 경보** — §8.2 |
+| `EmptyAnnounceHaltCount` / 마지막 classoid | 세션 도중 DROP된 테이블의 밀린 로그 감지 | **>0 즉시 경보** — §8.7 |
+| `AnnounceIncludeMismatchHaltCount` / 마지막 테이블 | 세션 도중 RENAME된 테이블의 밀린 로그 감지 | **>0 즉시 경보** — §8.7 |
 
 Kafka Connect 표준 감시와 병행한다:
 
@@ -327,6 +332,11 @@ offset 삭제는 항상 스냅샷 재수행과 짝이다.
 **증상**: source task FAILED, 예외 메시지에 테이블명 + DDL 종류 + DDL 문장 전문 +
 이 절 포인터. 조치 없이 재시작하면 같은 DDL에서 다시 멈춘다(정상 동작 — silent
 bypass가 불가능하도록 설계됨).
+
+커넥터에 도착한 TABLE DDL(ALTER/DROP/RENAME/TRUNCATE)은 **무조건** halt한다 —
+서버측 extraction 필터를 통과했다는 사실 자체가 캡처 대상임의 증명이다. 인덱스
+추가·삭제 등 행 인코딩에 영향 없는 ALTER는 엔진이 INDEX 분류로 실어 보내 halt
+없이 통과한다.
 
 **계획된 DDL 절차** (권장 — halt를 아예 내지 않는 순서):
 
@@ -394,6 +404,22 @@ abandon된 트랜잭션은 재시작해도 복구되지 않는다(anchor가 전�
 `CUBRID_LOG_NO_TABLE_PRIVILEGE(-37)` = include list의 특정 테이블 SELECT 누락(에러가
 테이블을 지목). DBA로 `GRANT SELECT` 후 task restart. 로그인 실패 코드와 다르므로
 비밀번호 문제와 혼동하지 않는다.
+
+### 8.7 Relation identity halt recovery — 테이블 소멸·개명 감지
+
+include 대상 테이블이 **소멸·개명된 채로 로그나 기동이 진행될 뻔한 상황**을 커넥터가
+fail-fast로 세운 경우다. 세 가지 증상 모두 원인 진단은 다르지만 **처방은 하나** —
+`table.include.list`를 현재 스키마에 맞게 정비한 뒤 §8.0 resnapshot.
+
+| 증상(예외 메시지) | 원인 |
+| --- | --- |
+| `relation announce ... empty names` | 세션 도중 DROP된 테이블의 밀린 로그(드랍 lag) — 해당 커밋분은 더 이상 라우팅 불가 |
+| `announce named '...' which is not in 'table.include.list'` | 세션 도중 RENAME된 테이블의 밀린 로그 — 새 이름으로 announce됨 |
+| `'table.include.list' entry '...' does not exist` (기동 실패) | 커넥터 정지 중 DROP/RENAME된 테이블, 또는 목록 오타·권한 누락 |
+
+세 경우 모두 **halt 이전 커밋분까지는 발행 완료** 상태다. 유실 없이 잇는 경로는
+없다(소멸한 identity의 로그는 복원 불가) — resnapshot이 유일한 복구 공식이다.
+관측: JMX `EmptyAnnounceHaltCount` / `AnnounceIncludeMismatchHaltCount` (§7.1).
 
 ## 9. 세팅 완료 판정
 

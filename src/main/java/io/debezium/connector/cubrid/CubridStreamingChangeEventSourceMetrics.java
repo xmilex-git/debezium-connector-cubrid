@@ -34,9 +34,13 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     private final AtomicLong ddlHalts = new AtomicLong();
     private final AtomicLong midStreamCreateTables = new AtomicLong();
     private final AtomicLong haHalts = new AtomicLong();
+    private final AtomicLong emptyAnnounceHalts = new AtomicLong();
+    private final AtomicLong announceIncludeMismatchHalts = new AtomicLong();
     private volatile String lastDdlHaltTable = "";
     private volatile String lastDdlHaltStatement = "";
     private volatile String lastHaHaltReason = "";
+    private volatile String lastEmptyAnnounceHaltClassoid = "";
+    private volatile String lastAnnounceIncludeMismatchTable = "";
 
     public <T extends CdcSourceTaskContext> CubridStreamingChangeEventSourceMetrics(T taskContext,
                                                                                     ChangeEventQueueMetrics changeEventQueueMetrics,
@@ -149,6 +153,38 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
     }
 
     @Override
+    public void onEmptyAnnounceHalt(long classoid) {
+        emptyAnnounceHalts.incrementAndGet();
+        lastEmptyAnnounceHaltClassoid = String.valueOf(classoid);
+    }
+
+    @Override
+    public void onAnnounceIncludeMismatchHalt(String ownerTable) {
+        announceIncludeMismatchHalts.incrementAndGet();
+        lastAnnounceIncludeMismatchTable = ownerTable == null ? "" : ownerTable;
+    }
+
+    @Override
+    public long getEmptyAnnounceHaltCount() {
+        return emptyAnnounceHalts.get();
+    }
+
+    @Override
+    public String getLastEmptyAnnounceHaltClassoid() {
+        return lastEmptyAnnounceHaltClassoid;
+    }
+
+    @Override
+    public long getAnnounceIncludeMismatchHaltCount() {
+        return announceIncludeMismatchHalts.get();
+    }
+
+    @Override
+    public String getLastAnnounceIncludeMismatchTable() {
+        return lastAnnounceIncludeMismatchTable;
+    }
+
+    @Override
     public void reset() {
         super.reset();
         activeTransactions.set(0);
@@ -158,9 +194,13 @@ public class CubridStreamingChangeEventSourceMetrics extends DefaultStreamingCha
         ddlHalts.set(0);
         midStreamCreateTables.set(0);
         haHalts.set(0);
+        emptyAnnounceHalts.set(0);
+        announceIncludeMismatchHalts.set(0);
         lastDdlHaltTable = "";
         lastDdlHaltStatement = "";
         lastHaHaltReason = "";
+        lastEmptyAnnounceHaltClassoid = "";
+        lastAnnounceIncludeMismatchTable = "";
         synchronized (abandonedTransactionIds) {
             abandonedTransactionIds.clear();
         }

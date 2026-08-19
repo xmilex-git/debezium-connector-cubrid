@@ -94,8 +94,10 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
         final Set<Integer> abandoned = new HashSet<>();
         // classoid -> owner.table from CDC_RELATION announces (ADR 0011 D4). Session-scoped by
         // design: the state is rebuilt from the stream after every (re)connect and never
-        // persisted; the server re-announces per session. An empty-name announce (class already
-        // dropped server-side) maps the classoid to null = known but unroutable.
+        // persisted; the server re-announces per session. Every value is a member of the literal
+        // include list (workspace#82 D5) — an empty-name or non-included announce halts the
+        // stream instead of ever entering the dictionary, so DML routing through it IS literal
+        // include-list matching (D4).
         final Map<Long, TableId> relationDictionary = new HashMap<>();
         long counter;
 
@@ -148,6 +150,14 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
 
         /** The HA halt guard fired (ADR 0010 D2); the task is about to fail. */
         default void onHaHalt(String reason) {
+        }
+
+        /** An empty/half-empty relation announce halted the stream (workspace#82 D2). */
+        default void onEmptyAnnounceHalt(long classoid) {
+        }
+
+        /** An announce named a table outside the include list (workspace#82 D5); halting. */
+        default void onAnnounceIncludeMismatchHalt(String ownerTable) {
         }
     }
 
@@ -227,6 +237,9 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             }
 
             final StreamState state = new StreamState(counter);
+            // literal include-list routing (workspace#82 D4): every entry was verified to exist
+            // with a loadable schema at task bootstrap, so membership alone decides routing
+            final Set<TableId> includeTables = Set.copyOf(connectorConfig.getExtractionTableIds());
             final BufferPolicy policy = new BufferPolicy(
                     connectorConfig.getTransactionEventsThreshold(),
                     connectorConfig.getTransactionRetentionMs(),
@@ -251,7 +264,7 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                 cursor = batch.lsaOut();
 
                 processBatch(state, policy, batch.items(), batchInLsaRaw, cursor,
-                        tableId -> schema.tableFor(tableId) != null,
+                        includeTables::contains,
                         (lsaRaw, seq) -> offsetContext.setAnchor(Lsa.fromRaw(lsaRaw), seq),
                         (buffer, commitDcl) -> publishTransaction(partition, offsetContext, buffer, commitDcl),
                         metrics);
@@ -290,13 +303,15 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
      * permanently lost downstream; recovery is a re-snapshot. Items of abandoned transactions stay
      * counted, so counter determinism on replay is unaffected.
      * <p>
-     * DDL halt (ADR 0008): a captured-table ALTER/DROP/RENAME/TRUNCATE DDL item throws
-     * {@link DdlHaltException} the moment it is seen — committed events before it publish
-     * normally, in-flight buffers never publish, and the anchor stays before the DDL so a
-     * restart deterministically re-halts. Mid-stream CREATE TABLE only warns (D3).
+     * DDL halt (ADR 0008, amended by workspace#82 D3): any TABLE ALTER/DROP/RENAME/TRUNCATE DDL
+     * item that reaches the connector throws {@link DdlHaltException} the moment it is seen —
+     * unconditionally, because passing the server-side extraction filter proves it concerns a
+     * capture target. Committed events before it publish normally, in-flight buffers never
+     * publish, and the anchor stays before the DDL so a restart deterministically re-halts.
+     * Mid-stream CREATE TABLE only warns (ADR 0008 D3).
      */
     static void processBatch(StreamState state, BufferPolicy policy, List<RawLogItem> items, long batchInLsaRaw, long batchOutLsaRaw,
-                             java.util.function.Predicate<TableId> captured,
+                             java.util.function.Predicate<TableId> included,
                              AnchorSink anchorSink, CommitSink commitSink, TxnBufferMetrics metrics)
             throws InterruptedException {
         final long batchStartCounter = state.counter;
@@ -313,11 +328,35 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                 // buffer: it belongs to no transaction and must survive an ADR 0007 abandon.
                 // Contrast ROLLBACK_TO (#47), which IS position-derived and deterministic on
                 // replay, so it stays counted.
-                state.relationDictionary.put(item.classoid(),
-                        item.relationOwner().isEmpty() && item.relationTable().isEmpty()
-                                ? null // announced but already dropped server-side — known, unroutable
-                                : new TableId(null, item.relationOwner().toLowerCase(java.util.Locale.ROOT),
-                                        item.relationTable().toLowerCase(java.util.Locale.ROOT)));
+                if (item.relationOwner().isEmpty() || item.relationTable().isEmpty()) {
+                    // D2 (workspace#82): the engine resolves announce names at extraction time,
+                    // so empty names mean the class was dropped server-side while its committed
+                    // log lagged behind the read cursor — every buffered change of that classoid
+                    // would silently skip and the sink would diverge. Fail loud instead.
+                    metrics.onEmptyAnnounceHalt(item.classoid());
+                    throw new io.debezium.DebeziumException(
+                            "CDC relation announce for classoid " + item.classoid() + " arrived with empty names — "
+                                    + "the table was dropped server-side before its lagging committed log was read, "
+                                    + "so its changes can no longer be routed and the sink would silently diverge. "
+                                    + "Remove the dropped table from 'table.include.list', then run the resnapshot procedure. "
+                                    + "See the CUBRID connector setup guide, section 'Relation identity halt recovery'.");
+                }
+                final TableId announced = new TableId(null, item.relationOwner().toLowerCase(java.util.Locale.ROOT),
+                        item.relationTable().toLowerCase(java.util.Locale.ROOT));
+                if (!included.test(announced)) {
+                    // D5 (workspace#82): the server only announces extraction targets, so an
+                    // announce outside the include list means the table was renamed while its
+                    // log lagged (the old name's changes now travel under the new name), or the
+                    // engine/connector extraction contract is broken.
+                    metrics.onAnnounceIncludeMismatchHalt(announced.identifier());
+                    throw new io.debezium.DebeziumException(
+                            "CDC relation announce named '" + announced.identifier() + "' (classoid " + item.classoid()
+                                    + ") which is not in 'table.include.list' — the table was renamed server-side while "
+                                    + "its committed log lagged, so its changes would be misattributed or lost. "
+                                    + "Update 'table.include.list' to the current schema, then run the resnapshot procedure. "
+                                    + "See the CUBRID connector setup guide, section 'Relation identity halt recovery'.");
+                }
+                state.relationDictionary.put(item.classoid(), announced);
                 continue;
             }
             state.counter++;
@@ -340,10 +379,9 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                                         + "Restart the connector; if this persists, the engine and connector "
                                         + "releases do not match (ADR 0011 D10).");
                     }
+                    // dictionary membership was include-verified at announce time (D5), so this
+                    // route IS literal include-list matching (D4) — no schema-based predicate
                     final TableId tableId = state.relationDictionary.get(item.classoid());
-                    if (tableId == null || !captured.test(tableId)) {
-                        continue; // announced but dropped server-side, or not in the schema — counted, never buffered
-                    }
                     final TxnBuffer buffer = state.inflight.computeIfAbsent(item.transactionId(),
                             trid -> new TxnBuffer(batchInLsaRaw, batchStartCounter, policy.nowMs().getAsLong()));
                     buffer.changes.add(new BufferedChange(state.counter, tableId, item));
@@ -402,15 +440,17 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
                                 + "the documented restart+snapshot procedure (ADR 0008 D3): {}", item.ddlStatement());
                         continue;
                     }
-                    // a DDL may legitimately arrive without an announce (e.g. a NULL-classoid
-                    // statement); only an announced, schema-known table triggers the halt
-                    final TableId tableId = state.relationDictionary.get(item.classoid());
-                    if (tableId == null || !captured.test(tableId)) {
-                        continue; // not a captured table (ADR 0008 D1)
-                    }
-                    // ALTER/DROP/RENAME/TRUNCATE — and, fail-safe, any unknown future ddl_type
-                    metrics.onDdlHalt(tableId.identifier(), ddlType.name(), item.ddlStatement());
-                    throw new DdlHaltException(tableId, ddlType, item.ddlStatement());
+                    // D3 (workspace#82): a TABLE DDL that reached the connector passed the
+                    // server-side extraction filter — that alone proves it concerns a capture
+                    // target, so halt unconditionally with no dictionary or schema lookup
+                    // (a lookup could miss and silently skip the halt, e.g. a NULL-classoid
+                    // statement). ALTER/DROP/RENAME/TRUNCATE — and, fail-safe, any unknown
+                    // future ddl_type. The dictionary is consulted only to label the error.
+                    final TableId announced = state.relationDictionary.get(item.classoid());
+                    final String tableLabel = announced != null ? announced.identifier()
+                            : "<unannounced classoid " + item.classoid() + ">";
+                    metrics.onDdlHalt(tableLabel, ddlType.name(), item.ddlStatement());
+                    throw new DdlHaltException(tableLabel, ddlType, item.ddlStatement());
                 }
                 default -> {
                     // UNKNOWN item type — counted, ignored
