@@ -43,6 +43,7 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 | DML (INSERT/UPDATE/DELETE) | 전체 지원. UPDATE는 full after-image(cond⊕changed 병합), DELETE는 PK만(PG `REPLICA IDENTITY DEFAULT` 상당) | ADR 0003 |
 | 트랜잭션 | COMMIT/ABORT·savepoint/문장 rollback 정확 반영. 버퍼는 기본 무제한, opt-in 상한(§5) | ADR 0004/0007, #47 |
 | 컬럼 타입 | 13타입 지원(경계값 corpus 검증). 미지원 타입은 **기동 시 fail-fast**(무성 소실 없음) | [type-support.md](type-support.md), #73 |
+| DB 문자셋 | **UTF-8 DB만 지원** — 비 UTF-8(EUC-KR·ISO-8859-1 등) DB는 기동 시 fail-fast(무성 훼손 없음) | #77 |
 | 초기 스냅샷 | **online**(쓰기 정지 불요), REPEATABLE READ + barrier LSA. `snapshot.max.threads=1` 고정 | ADR 0009, [snapshot.md](snapshot.md) |
 | 재/추가 스냅샷 | Kafka signal 기반 **blocking snapshot**(테이블 백필·재적재). incremental snapshot은 post-1.0(선배선 완료) | ADR 0009 D4/D6 |
 | DDL | **DDL halt**: captured 테이블의 ALTER/DROP/RENAME/TRUNCATE 감지 시 안전 정지(non-retriable). 복구는 resnapshot 단일 절차. 자동 schema evolution 없음 | ADR 0008 |
@@ -115,6 +116,12 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 11. **at-least-once** — 다운스트림에 물리 중복이 존재할 수 있다(동일 `_version`으로
     canonical view에서는 수렴). raw `_local` 테이블을 직접 조회하는 소비는 지원 대상이
     아니다 — 조회 표면은 canonical FINAL view뿐이다.
+12. **DB 문자셋은 UTF-8만 지원** — 엔진은 문자열(컬럼 값·식별자·DDL 문)을 DB codeset의
+    raw bytes로 charset 표기 없이 송출하고 커넥터는 전부 UTF-8로 decode하므로, 비 UTF-8
+    DB(EUC-KR 등)는 비ASCII 데이터가 무성 훼손되고 snapshot(JDBC)과 streaming의 decode가
+    어긋난다. 커넥터는 기동 시 `db_root`의 codeset을 확인해 **UTF-8이 아니면 기동을
+    거부**한다(위반 charset 명시 + 조치 안내). 비 UTF-8 DB를 캡처하려면 UTF-8 locale로
+    생성한 DB로 이관(unloaddb/loaddb)해야 한다. codeset negotiation은 post-1.0.
 
 ## 6. 요구 버전·엔진 기능
 

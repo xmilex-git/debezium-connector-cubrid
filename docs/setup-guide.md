@@ -20,6 +20,9 @@ CUBRID → Debezium → Kafka → ClickHouse 파이프라인을 고객사에 세
 - [ ] 캡처 대상 테이블의 전 컬럼이 지원 13타입인가 — [type-support.md](type-support.md)
       미지원 목록(MONETARY·BIT·TZ 계열·컬렉션·LOB·JSON) 확인. 미지원 컬럼이 있으면
       커넥터가 기동을 거부한다
+- [ ] 캡처 대상 DB의 **charset이 UTF-8인가** — `SELECT charset FROM db_root`가 5(utf8)
+      여야 한다(임의 계정으로 조회 가능). 비 UTF-8 DB(EUC-KR 등)는 커넥터가 기동을
+      거부한다 — support-scope.md §5-12
 - [ ] DDL 운영 절차 합의 — captured 테이블 DDL은 파이프라인을 세운다(§8.1). 고객의
       스키마 변경 프로세스에 이 절차가 들어가야 한다
 - [ ] HA 구성이면: 전 승격 후보 노드에 `supplemental_log` 설정 계획 + failover 시

@@ -119,6 +119,22 @@ public class CubridConnection extends JdbcConnection {
                 .create());
     }
 
+    /**
+     * Reads the database codeset id — the engine's {@code INTL_CODESET} enum value — from
+     * {@code db_root}, for the UTF-8-only startup guard (workspace#77). {@code db_root} is
+     * PUBLIC-selectable (measured on 11.5, non-DBA account), and the stored id is immune to
+     * session state such as {@code SET NAMES}, unlike a {@code CHARSET(<literal>)} probe.
+     */
+    public int readDatabaseCharsetId() throws SQLException {
+        try (PreparedStatement ps = connection().prepareStatement("SELECT charset FROM db_root");
+                ResultSet rs = ps.executeQuery()) {
+            if (!rs.next()) {
+                throw new SQLException("db_root returned no row while reading the database charset");
+            }
+            return rs.getInt(1);
+        }
+    }
+
     private List<String> readPrimaryKeyNames(TableId tableId) throws SQLException {
         final List<String> pkNames = new ArrayList<>();
         try (PreparedStatement ps = connection().prepareStatement(

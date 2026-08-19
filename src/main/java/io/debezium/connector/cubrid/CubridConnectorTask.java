@@ -94,6 +94,15 @@ public class CubridConnectorTask extends BaseSourceTask<CubridPartition, CubridO
                 new CubridPartition.Provider(connectorConfig),
                 new CubridOffsetContext.Loader(connectorConfig));
 
+        // UTF-8-only guard (workspace#77, review §4.14-A): runs first, before anything decodes
+        // strings — a non-UTF-8 database corrupts silently on both the JDBC and the log path.
+        try {
+            DatabaseCharsetGuard.check(dataConnection.readDatabaseCharsetId());
+        }
+        catch (SQLException e) {
+            throw new io.debezium.DebeziumException("Failed to read the database charset from db_root", e);
+        }
+
         // Non-historized schema bootstrap (Postgres model): read the captured tables' structure
         // from the database on every start, so a restart that skips the snapshot phase can stream.
         // The unsupported-type guard (workspace#73) runs here because the include list is a fixed
