@@ -206,6 +206,7 @@ public class CubridStreamingChangeEventSource implements StreamingChangeEventSou
             final CubridLogClient.NodeFacts nodeFacts = client.nodeFacts();
             offsetContext.setSourceNode(HaNodeGuard.verifyAndStamp(
                     offsetContext.getSourceNode(),
+                    offsetContext.getAnchorLsa().isAvailable(),
                     HaNodeGuard.identity(connectorConfig.getJdbcConfig().getHostname(), nodeFacts.dbCreationSeconds() * 1000L),
                     nodeFacts.haServerState(),
                     metrics::onHaHalt));

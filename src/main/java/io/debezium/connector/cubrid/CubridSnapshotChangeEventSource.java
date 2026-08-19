@@ -149,26 +149,37 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
                     connectorConfig.getDatabaseName(),
                     connectorConfig.getJdbcConfig().getUser(),
                     connectorConfig.getJdbcConfig().getPassword());
-            // HA halt guard, state axis only (ADR 0010 D2-2): never snapshot a non-master — a
-            // standby's data plus a later stream would mix two nodes' histories. The identity
-            // axis needs a stored offset to compare against, so it lives in the streaming
-            // source, which stamps the identity on its first run after this snapshot.
-            HaNodeGuard.assertCapturableState(client.nodeFacts().haServerState(), reason -> {
-            });
+            // HA halt guard at the barrier (ADR 0010 D2, P0-5): the barrier session's own node
+            // facts are stamped into the snapshot offset immediately, so an interrupted snapshot
+            // resumed on a different node — and a stream started on a different node than the
+            // barrier — both halt instead of silently mixing two nodes' histories.
+            final CubridLogClient.NodeFacts nodeFacts = client.nodeFacts();
+            final String liveIdentity = HaNodeGuard.identity(
+                    connectorConfig.getJdbcConfig().getHostname(), nodeFacts.dbCreationSeconds() * 1000L);
             if (previousOffset != null && previousOffset.getAnchorLsa().isAvailable()) {
-                // Interrupted-snapshot rerun (ADR 0009 D2 ④): reuse the original barrier. The
-                // rescan's view is established now, i.e. after that (older) barrier, so the
-                // ordering invariant below holds trivially and streaming replay from the barrier
-                // covers every difference. (The on-demand blocking snapshot never reaches this
-                // method — core skips step 4 for onDemand tasks; its D4 invariant is re-asserted
-                // in getBlockingSnapshottingTask.)
+                // Interrupted-snapshot rerun (ADR 0009 D2 ④): reuse the original barrier — but
+                // only on the node it was captured on. Both guard axes run before the anchor is
+                // touched; a mismatch (or a node-less pre-P0-5 barrier) is a non-retriable halt
+                // with the anchor unadvanced. The rescan's view is established now, i.e. after
+                // that (older) barrier, so the ordering invariant below holds trivially and
+                // streaming replay from the barrier covers every difference. (The on-demand
+                // blocking snapshot never reaches this method — core skips step 4 for onDemand
+                // tasks; its D4 invariant is re-asserted in getBlockingSnapshottingTask.)
+                previousOffset.setSourceNode(HaNodeGuard.verifyAndStamp(
+                        previousOffset.getSourceNode(), true, liveIdentity, nodeFacts.haServerState(), reason -> {
+                        }));
                 ctx.offset = previousOffset;
                 return;
             }
+            // Fresh snapshot: state axis only (no stored identity exists yet), then stamp the
+            // barrier node identity into the offset the moment it is created.
+            HaNodeGuard.assertCapturableState(nodeFacts.haServerState(), reason -> {
+            });
             final long barrier = client.findLsa(Instant.now().getEpochSecond());
             final Lsa barrierLsa = Lsa.fromRaw(barrier);
             LOGGER.info("Captured snapshot barrier LSA {}", barrierLsa);
             ctx.offset = new CubridOffsetContext(connectorConfig, barrierLsa, 0L, 0, false, false);
+            ctx.offset.setSourceNode(liveIdentity);
         }
         finally {
             try {

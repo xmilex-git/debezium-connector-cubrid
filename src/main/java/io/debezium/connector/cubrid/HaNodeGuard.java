@@ -46,13 +46,23 @@ final class HaNodeGuard {
 
     /**
      * Runs both guard axes against the node just connected to and returns the identity to stamp
-     * into the offset. A {@code null} stored identity (fresh start, or an offset written before
-     * this guard existed) passes and is stamped on the next offset flush.
+     * into the offset. A {@code null} stored identity passes only on a genuinely fresh start
+     * ({@code anchored} false — no persisted position exists yet); an anchored offset without an
+     * identity is unverifiable provenance and halts (P0-5 contract inversion, ADR 0010 추기 —
+     * every offset this build persists, snapshot barrier included, carries the identity, so a
+     * node-less anchor can only come from a pre-guard build or a tampered offset).
      *
-     * @throws HaHaltException on either violation (never retriable — ADR 0010 D3)
+     * @param anchored whether a persisted position (streaming anchor or snapshot barrier)
+     *            already exists for this offset
+     * @throws HaHaltException on any violation (never retriable — ADR 0010 D3)
      */
-    static String verifyAndStamp(String storedIdentity, String liveIdentity, String haServerState, Consumer<String> haltMetric) {
+    static String verifyAndStamp(String storedIdentity, boolean anchored, String liveIdentity, String haServerState, Consumer<String> haltMetric) {
         assertCapturableState(haServerState, haltMetric);
+        if (storedIdentity == null && anchored) {
+            final HaHaltException halt = HaHaltException.unstampedAnchor();
+            haltMetric.accept(halt.getMessage());
+            throw halt;
+        }
         if (storedIdentity != null && !storedIdentity.equals(liveIdentity)) {
             final HaHaltException halt = HaHaltException.nodeMismatch(storedIdentity, liveIdentity);
             haltMetric.accept(halt.getMessage());

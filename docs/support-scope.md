@@ -88,7 +88,13 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
    한다(자동 전파 없음). ③ 잔여 갭: master를 따라가는 VIP/DNS + backup/restore로 구축한
    slave 조합에서는 노드 전환이 가드에 안 걸릴 수 있다 — failover 시 반드시 "커넥터 정지
    → resnapshot" 절차를 지켜야 한다. ④ blocking snapshot은 라이브 스트리밍 세션의 검증
-   우산 아래에서만 상태가 보장된다.
+   우산 아래에서만 상태가 보장된다. ⑤ 초기·중단 재개 스냅샷은 barrier 세션의 노드
+   identity를 offset에 즉시 stamp하고, 중단된 스냅샷을 다른 노드에서 재개하거나 barrier와
+   다른 노드에서 스트리밍을 시작하면 halt한다(P0-5). identity 없는 anchored offset도
+   halt(fail-closed) — 복구는 resnapshot. ⑥ 잔여 갭: 스냅샷 데이터 스캔(JDBC, broker
+   경유)과 barrier CDC 세션이 같은 실서버인지는 상호 검증 수단이 없다(비-DBA로 읽을 수
+   있는 JDBC측 `db_creation` 상당 값 부재) — broker `databases.txt`가 다른 호스트를
+   가리키는 구성을 금지하고, JDBC와 CDC가 같은 호스트를 보도록 구성해야 한다.
 5. **트랜잭션 버퍼** — 기본은 무제한(in-memory): 초대형·초장기 트랜잭션은 Connect 워커
    heap을 소진할 수 있다 — heap sizing은 워크로드의 최대 트랜잭션을 수용하도록 잡는다.
    opt-in 상한(`transaction.events.threshold`·`transaction.retention.ms`) 발동 시 해당

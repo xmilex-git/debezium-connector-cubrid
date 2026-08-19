@@ -33,6 +33,15 @@ public class HaHaltException extends DebeziumException {
                 + " against the current master — see the CUBRID connector setup guide, section 'HA failover recovery'.");
     }
 
+    /** An anchored offset without a stamped node identity — provenance cannot be verified. */
+    public static HaHaltException unstampedAnchor() {
+        return new HaHaltException("HA halt (ADR 0010 D2-1): the stored offset carries a position but no source node identity,"
+                + " so it cannot be verified against the node the connector is attached to now. Offsets written by this"
+                + " connector version always carry the identity — a node-less anchor comes from a pre-guard build or a"
+                + " tampered offset, and resuming it could silently read another node's log. Recover with the resnapshot"
+                + " procedure against the current master — see the CUBRID connector setup guide, section 'HA failover recovery'.");
+    }
+
     /** Path B — the connected node is not in a capturable HA state (e.g. a demoted old master). */
     public static HaHaltException notCapturableState(String haServerState) {
         return new HaHaltException("HA halt (ADR 0010 D2-2): the connected node reports HA server state '" + haServerState
