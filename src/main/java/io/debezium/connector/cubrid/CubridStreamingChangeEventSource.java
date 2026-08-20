@@ -30,7 +30,8 @@ import io.debezium.relational.TableId;
 import io.debezium.util.Clock;
 
 /**
- * Streams changes out of the CUBRID transaction log through the {@code cubrid_log} JNA client.
+ * Streams changes out of the CUBRID transaction log through the {@code cubrid_log} extraction
+ * protocol, spoken by a pure-Java wire client (no native library / JNA — ADR 0012).
  * <p>
  * Positioning follows ADR 0004: every non-TIMER item advances a deterministic counter which is the
  * event position ({@code source.lsn} → {@code _version}); DML items are buffered per transaction

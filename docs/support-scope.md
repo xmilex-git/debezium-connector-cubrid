@@ -42,7 +42,7 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 |---|---|---|
 | DML (INSERT/UPDATE/DELETE) | 전체 지원. UPDATE는 full after-image(cond⊕changed 병합), DELETE는 PK만(PG `REPLICA IDENTITY DEFAULT` 상당) | ADR 0003 |
 | 트랜잭션 | COMMIT/ABORT·savepoint/문장 rollback 정확 반영. 버퍼는 기본 무제한, opt-in 상한(§5) | ADR 0004/0007, #47 |
-| 컬럼 타입 | 13타입 지원(경계값 corpus 검증). 미지원 타입은 **기동 시 fail-fast**(무성 소실 없음) | [type-support.md](type-support.md), #73 |
+| 컬럼 타입 | 17타입 지원(경계값 corpus 검증 — 기본 13종 + TZ 4종, workspace#86). 미지원 타입은 **기동 시 fail-fast**(무성 소실 없음) | [type-support.md](type-support.md), #73/#86 |
 | DB 문자셋 | **UTF-8 DB만 지원** — 비 UTF-8(EUC-KR·ISO-8859-1 등) DB는 기동 시 fail-fast(무성 훼손 없음) | #77 |
 | 초기 스냅샷 | **online**(쓰기 정지 불요), REPEATABLE READ + barrier LSA. `snapshot.max.threads=1` 고정 | ADR 0009, [snapshot.md](snapshot.md) |
 | 재/추가 스냅샷 | Kafka signal 기반 **blocking snapshot**(테이블 백필·재적재). incremental snapshot은 post-1.0(선배선 완료) | ADR 0009 D4/D6 |
@@ -73,9 +73,10 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 세팅 가이드의 체크리스트가 이 목록을 참조한다. 각 항목의 복구·운영 절차는
 [setup-guide.md](setup-guide.md) runbook 절.
 
-1. **미지원 컬럼 타입** — MONETARY·BIT/VARBIT·TZ 계열·SET/MULTISET/LIST·BLOB/CLOB·JSON
+1. **미지원 컬럼 타입** — MONETARY·BIT/VARBIT·SET/MULTISET/LIST·BLOB/CLOB·JSON
    컬럼이 captured 테이블에 있으면 커넥터가 **기동을 거부**한다(allow-list 가드, 위반
-   컬럼 전부 나열). 상세·실측 근거: [type-support.md](type-support.md).
+   컬럼 전부 나열). TZ 계열 4종은 workspace#86부터 지원(allow-list 편입). 상세·실측
+   근거: [type-support.md](type-support.md).
 2. **DDL halt** — captured 테이블 DDL 한 건으로 파이프라인이 선다(정합성 우선 설계).
    조치 없는 재시작은 같은 DDL에서 결정론적으로 다시 멈춘다. TRUNCATE도 halt한다
    (Debezium 기본값보다 엄격 — RMT current-state 계약 때문). mid-stream CREATE TABLE은
