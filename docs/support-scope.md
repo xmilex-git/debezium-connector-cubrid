@@ -189,7 +189,7 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
     - **고정 엔진/커넥터 full SHA pair** — §6에 기록된 정확한 커밋 쌍만 지원 조합.
       파일럿 기준선: 엔진 `bdbeaf3f184e13adf898f1a3dfb7a243c3cf5229`
       (`xmilex-git/cubrid` `htap/cdc-select-privilege`, tag `htap-pilot-20260820`),
-      커넥터 `85ac72588ca4b82f810c16f24e58ddcde5d7ab8b`
+      커넥터 `c59bf83761f434794ee972ba53afc69ec152a36b`
       (`xmilex-git/debezium-connector-cubrid` `main`, tag `htap-pilot-20260820`).
 
 15. **DB당 CDC source connector 1개 (엔진 단일 세션)** — 엔진은 DB당 단일 CDC 세션
