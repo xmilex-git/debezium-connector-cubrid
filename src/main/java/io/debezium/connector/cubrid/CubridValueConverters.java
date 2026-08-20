@@ -6,6 +6,7 @@
 package io.debezium.connector.cubrid;
 
 import java.sql.Types;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -20,15 +21,22 @@ import io.debezium.time.ZonedTimestamp;
 /**
  * Conversion of CUBRID specific datatypes.
  * <p>
- * CUBRID DATETIME/TIMESTAMP (both {@link Types#TIMESTAMP}) are emitted as {@link ZonedTimestamp}
- * ISO-8601 UTC strings — the sink contract of workspace#39 (ClickHouse
- * {@code DateTime64(3,'UTC')} + {@code date_time_input_format=best_effort}). Values pass through
- * as wall-clock: both the snapshot (JDBC {@code java.sql.Timestamp}) and the streaming decoder
- * produce timestamps in the worker JVM's default zone, and the UTC default offset renders the
- * same wall-clock digits back out.
+ * CUBRID DATETIME and TIMESTAMP both report {@link Types#TIMESTAMP}, but their contracts differ —
+ * the split keys on the catalog typeName (#76-D3, resolving ADR 0005's "TYPE_NAME 분기" follow-up):
+ * <ul>
+ * <li><b>TIMESTAMP</b> stores an instant (UTC epoch) → {@link ZonedTimestamp}. Both paths deliver
+ * an {@link java.time.OffsetDateTime} restored from UTC wall-clock digits (wire v2 §3.1 pins the
+ * CDC daemon timezone to UTC; the snapshot session is pinned by {@code SET TIME ZONE 'UTC'}), so
+ * the emitted ISO string is the true instant — never a fabricated {@code Z} on local digits.</li>
+ * <li><b>DATETIME</b> is zone-less → offset-less ISO-8601 string ({@link CubridTemporal}), the
+ * PostgreSQL {@code timestamp_out} shape. The sink binds the zone explicitly (validated path:
+ * ClickHouse {@code DateTime64(3,'UTC')} + {@code date_time_input_format=best_effort}).</li>
+ * </ul>
+ * TZ-carrying types (TIMESTAMPTZ/LTZ, DATETIMETZ/LTZ) are rejected by the
+ * {@link UnsupportedTypeGuard} until workspace#86.
  * <p>
- * TODO: BLOB/CLOB, ENUM, DATETIMETZ fidelity is out of POC scope; the generic JDBC conversions
- * apply to everything else.
+ * TODO: BLOB/CLOB fidelity is out of POC scope; the generic JDBC conversions apply to everything
+ * else.
  */
 public class CubridValueConverters extends JdbcValueConverters {
 
@@ -39,7 +47,10 @@ public class CubridValueConverters extends JdbcValueConverters {
     @Override
     public SchemaBuilder schemaBuilder(Column column) {
         if (column.jdbcType() == Types.TIMESTAMP) {
-            return ZonedTimestamp.builder();
+            if (isInstantTimestamp(column)) {
+                return ZonedTimestamp.builder();
+            }
+            return SchemaBuilder.string();
         }
         return super.schemaBuilder(column);
     }
@@ -47,8 +58,23 @@ public class CubridValueConverters extends JdbcValueConverters {
     @Override
     public ValueConverter converter(Column column, org.apache.kafka.connect.data.Field fieldDefn) {
         if (column.jdbcType() == Types.TIMESTAMP) {
-            return data -> convertTimestampWithZone(column, fieldDefn, data);
+            if (isInstantTimestamp(column)) {
+                return data -> convertTimestampWithZone(column, fieldDefn, data);
+            }
+            return data -> convertZonelessDatetime(column, fieldDefn, data);
         }
         return super.converter(column, fieldDefn);
+    }
+
+    private static boolean isInstantTimestamp(Column column) {
+        return "TIMESTAMP".equalsIgnoreCase(column.typeName());
+    }
+
+    private Object convertZonelessDatetime(Column column, org.apache.kafka.connect.data.Field fieldDefn, Object data) {
+        return convertValue(column, fieldDefn, data, CubridTemporal.toIsoDatetimeString(LocalDateTime.ofEpochSecond(0, 0, ZoneOffset.UTC)), (r) -> {
+            if (data instanceof LocalDateTime) {
+                r.deliver(CubridTemporal.toIsoDatetimeString((LocalDateTime) data));
+            }
+        });
     }
 }

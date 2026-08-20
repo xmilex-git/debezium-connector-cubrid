@@ -21,15 +21,13 @@
 | DOUBLE | `DOUBLE`(8) | 8B little-endian IEEE754 | FLOAT64 | min normal / max / 0 / NULL (denormal은 엔진이 INSERT 거부, `-0.0`은 `+0.0`으로 정규화) |
 | CHAR(n) | `CHAR`(1) | raw UTF-8, **선언 길이까지 공백 패딩**(문자 단위) | STRING | 패딩 / 유니코드 / NULL |
 | VARCHAR(n) | `VARCHAR`(12) | raw UTF-8 | STRING | `''`≠NULL (ADR 0003) / 최대 선언 길이 / 유니코드·특수문자 |
-| DATE | `DATE`(91) | `MM/DD/YYYY` 문자열 | Date (epoch days, int32) | 0001-01-01 / 9999-12-31 / 윤일 / NULL — **1582-10-15 이전 값 주의**: CUBRID 날짜 산술은 Julian 규칙, Debezium epoch days는 proleptic Gregorian이라 서기 1년에서 2일 어긋남(실측); e2e corpus는 1583 이후만 검증 |
-| TIME | `TIME`(92) | `hh:mm:ss AM/PM` 문자열 | **NanoTime (ns-of-day, int64)** — 실측: 기본 temporal mode에서 generic JDBC 변환기가 ns 정밀도 선택 | 자정(`12:00:00 AM`→00:00) / 정오 / 23:59:59 / NULL |
-| TIMESTAMP | `TIMESTAMP`(93) | `hh:mm:ss AM/PM MM/DD/YYYY` 문자열 | ZonedTimestamp (UTC 문자열, #39 계약) | 32-bit epoch 경계(1970-01-01 00:00:01 UTC ~ 2038-01-19 03:14:07 UTC) / NULL |
-| DATETIME | `TIMESTAMP`(93) | `hh:mm:ss.fff AM/PM MM/DD/YYYY` 문자열 | ZonedTimestamp | 0001~9999 / `.000`·`.001`·`.999` ms / NULL |
+| DATE | `DATE`(91) | `YYYY-MM-DD` (wire v2 §3.2) | Date (epoch days, int32) | 0001-01-01 / 9999-12-31 / 윤일 / NULL — **1582-10-15 이전 값 주의**: CUBRID 날짜 산술은 Julian 규칙, Debezium epoch days는 proleptic Gregorian이라 서기 1년에서 2일 어긋남(실측); e2e corpus는 1583 이후만 검증 |
+| TIME | `TIME`(92) | `HH24:MI:SS` (wire v2 §3.2) | **NanoTime (ns-of-day, int64)** — 실측: 기본 temporal mode에서 generic JDBC 변환기가 ns 정밀도 선택 | 자정 / 정오 / 23:59:59 / NULL |
+| TIMESTAMP | `TIMESTAMP`(93), typeName=`TIMESTAMP` | `YYYY-MM-DD HH24:MI:SS` — **UTC wall-clock**(엔진 CDC 데몬 tz UTC 고정, wire v2 §3.1) | **ZonedTimestamp — 진짜 instant**(#76-D3): UTC 자릿수에서 Instant 복원, `...T...Z` | 32-bit epoch 경계(1970-01-01 00:00:01 UTC ~ 2038-01-19 03:14:07 UTC) / NULL |
+| DATETIME | `TIMESTAMP`(93), typeName=`DATETIME` | `YYYY-MM-DD HH24:MI:SS.FF3` (zone-less) | **offset 없는 ISO-8601 문자열**(#76-D3): `YYYY-MM-DDTHH:MM:SS.fff`, zone 단정 없음 — sink가 zone을 명시적으로 바인딩(검증 경로: ClickHouse `DateTime64(3,'UTC')`+`best_effort`) | 0001~9999 / `.000`·`.001`·`.999` ms / NULL |
 | ENUM | `VARCHAR`(12), typeName=`ENUM` | 라벨 문자열 | STRING | 라벨 / NULL — **라벨(문자열)로 매핑**, 서수 아님 |
 
-시간 타입 공통: 값은 wall-clock으로 통과하며 세션/서버 타임존 해석은 하지 않는다(`CubridValueConverters` — snapshot·streaming 동일 자릿수 계약, workspace#39).
-
-> **예고 — temporal 계약 개정(workspace#76)**: 위 wall-clock 통과 계약은 폐기가 결정되었다. 새 송출 계약의 기준 문서는 [HTAP CDC wire v2 명세](https://github.com/xmilex-git/workspace/blob/main/docs/htap-cdc-wire-v2.md)(workspace#80)이며, 엔진 workspace#84·커넥터 workspace#85 구현과 함께 발효된다(lockstep — 구엔진과 조합 불가). 이 표의 temporal 행·아래 TZ 4종 미지원 행은 #85/#86에서 개정된다.
+시간 타입 공통(workspace#76, 커넥터 구현 #85): wire 텍스트 계약은 [HTAP CDC wire v2 명세](https://github.com/xmilex-git/workspace/blob/main/docs/htap-cdc-wire-v2.md) §3.2가 byte 단위로 고정한다(v1 wall-clock 통과 계약은 폐기). 파서는 strict — 구엔진(v1) AM/PM 텍스트는 즉시 실패하며(lockstep 안전망) 우회 스위치가 없다. snapshot 쪽은 커넥터가 **매 JDBC 접속마다 `SET TIME ZONE 'UTC'`를 스스로 실행**해 TIMESTAMP 자릿수를 UTC로 결정론화하고, 값은 드라이버 문자열(`ResultSet.getString`)로 읽어 같은 파서로 해석한다 — 어느 경로에도 워커 JVM default zone이 개입하지 않는다(비UTC JVM matrix 테스트로 고정). TZ 4종 행(아래 미지원 표)의 가드 해제는 workspace#86.
 
 corpus가 잡은 버그: streaming 디코더의 FLOAT 경로가 삼항식 numeric promotion으로 float을 `Double`로 승격시켜 FLOAT32 스키마를 깨뜨렸다(snapshot은 `Float` — 경로 간 불일치). 경계 corpus 도입 커밋에서 수정.
 
@@ -45,7 +43,7 @@ ClickHouse sink 측 참고(HTAP 스택): DATETIME/TIMESTAMP를 `DateTime64(3,'UT
 |---|---|---|
 | MONETARY | JDBC가 `DOUBLE`(8)로 보고하는데 log는 통화기호 문자열(`$123456789.99`)을 실음 → 디코더의 DOUBLE 경로가 문자열 첫 8바이트를 IEEE754로 읽음 | **무성 값 훼손** (garbage double) |
 | BIT(n) / BIT VARYING(n) | JDBC는 `byte[]`, log는 리터럴 문자열 `X'aaf0'` → snapshot(BYTES)·streaming(STRING) 표현 불일치 | 스키마·값 불일치 |
-| TIMESTAMPTZ / TIMESTAMPLTZ / DATETIMETZ / DATETIMELTZ | log 문자열에 `+09:00` / `Asia/Seoul KST` 접미 → 디코더 파싱 실패(예외) | streaming task fail |
+| TIMESTAMPTZ / TIMESTAMPLTZ / DATETIMETZ / DATETIMELTZ | wire v2 포맷(` ±TZH:TZM` 접미)은 §3.2에 고정됐지만 커넥터 디코더·스키마 매핑 미구현(offset 접미 → strict 파서 실패) — 지원은 workspace#86 | streaming task fail (기동 가드가 선차단) |
 | SET / MULTISET / LIST | **non-NULL 값도 log에 NULL로 도착** (엔진이 컬렉션을 직렬화하지 않음) | **무성 NULL 소실** |
 | BLOB / CLOB | log·JDBC 모두 LOB **locator 경로**(`file:...`)만 노출, 내용 없음 | 내용 미복제 |
 | JSON | **non-NULL 값도 log에 NULL로 도착**; JDBC는 `VARCHAR`(12)로 보고해 jdbcType만으로는 VARCHAR와 구분 불가(typeName=`JSON`) | **무성 NULL 소실** (snapshot은 값이 있어 snapshot↔streaming 불일치) |

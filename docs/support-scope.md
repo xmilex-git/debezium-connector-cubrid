@@ -116,10 +116,14 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
 9. **서버·커넥터 버전 lockstep** — 런타임 버전 협상이 없다(의도적 — workspace#62 결정).
    커넥터는 대응하는 엔진 버전(§6)하고만 조합을 지원하며, relation 사전 이전의 구버전
    서버에는 연결 단계에서 명시적 에러로 정지한다. 버전 혼용은 제품 시나리오가 아니다.
-10. **시간 타입 시맨틱** — 값은 wall-clock passthrough(세션/서버 타임존 해석 없음):
-    시간대 일관성은 운영 규율(워커 UTC 고정 등)로 유지한다. sink `DateTime64(3,'UTC')`
-    범위는 1900–2299 — 범위 밖 값이 필요하면 sink 컬럼을 String으로. 1582-10-15 이전
-    DATE는 CUBRID(Julian)와 epoch days(proleptic Gregorian)가 어긋난다.
+10. **시간 타입 시맨틱** — 타입별 계약(workspace#76-D3, wire v2): TIMESTAMP는 진짜
+    instant(`ZonedTimestamp`, UTC 자릿수에서 복원), DATETIME은 zone-less(offset 없는
+    ISO-8601 문자열). 시간대 일관성은 운영 규율이 아니라 구조로 강제된다 — 엔진 CDC
+    데몬 tz는 UTC 고정(wire v2 §3.1), 커넥터는 매 JDBC 접속마다 `SET TIME ZONE 'UTC'`를
+    스스로 실행하고, 워커 JVM default zone은 어느 경로에도 개입하지 않는다(우회 스위치
+    없음). sink `DateTime64(3,'UTC')` 범위는 1900–2299 — 범위 밖 값이 필요하면 sink
+    컬럼을 String으로. 1582-10-15 이전 DATE는 CUBRID(Julian)와 epoch days(proleptic
+    Gregorian)가 어긋난다.
 11. **at-least-once** — 다운스트림에 물리 중복이 존재할 수 있다(동일 `_version`으로
     canonical view에서는 수렴). raw `_local` 테이블을 직접 조회하는 소비는 지원 대상이
     아니다 — 조회 표면은 canonical FINAL view뿐이다.

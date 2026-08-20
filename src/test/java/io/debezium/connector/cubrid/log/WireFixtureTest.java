@@ -28,7 +28,9 @@ import io.debezium.connector.cubrid.log.RawLogItem.ColumnValue;
 /**
  * Wire-dump fixture tests (ADR 0012 D5②): {@code src/test/resources/wire/cdc-session.hexlog}
  * is a byte-exact capture of a real {@code cubrid_log} C-client session against a live
- * cub_server (engine build 11.5.0/htap-cdc, recorded through a TCP proxy on 2026-08-18).
+ * cub_server (engine build 11.5.0/htap-cdc **wire v2**, workspace#84 build bdbeaf3f1,
+ * re-recorded through a TCP proxy on 2026-08-20 for the temporal wire v2 contract —
+ * DATETIME payloads now carry {@code YYYY-MM-DD HH24:MI:SS.FF3} ISO text).
  * The session configured three name-based extraction targets and streamed one committed
  * transaction: INSERT(t_order 990022) → UPDATE(t_item SKU-A) → INSERT(990023, undone via
  * savepoint) → ROLLBACK_TO → DELETE(990022) → COMMIT, plus RELATION and TIMER items, an
@@ -169,7 +171,14 @@ class WireFixtureTest {
         long flat = new OrReader(r.payload()).readLogLsaRaw();
         OrWriter w = new OrWriter();
         w.writeLogLsaRaw(flat);
-        assertArrayEquals(r.payload(), w.toByteArray());
+        byte[] encoded = w.toByteArray();
+        assertEquals(r.payload().length, encoded.length);
+        // bytes 10-11 are the C LOG_LSA struct's trailing padding — undefined content (the C
+        // client sends stack garbage there; the 2026-08-20 re-capture measured 0x20 0x00). Only
+        // the 8-byte pageid + 2-byte offset are contractual; the Java encoder always sends zeros.
+        for (int i = 0; i < 10; i++) {
+            assertEquals(r.payload()[i], encoded[i], "LSA byte " + i);
+        }
     }
 
     @Test

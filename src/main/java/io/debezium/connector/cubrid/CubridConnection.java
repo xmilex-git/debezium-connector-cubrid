@@ -48,11 +48,36 @@ public class CubridConnection extends JdbcConnection {
             + JdbcConfiguration.PORT + "}:${"
             + JdbcConfiguration.DATABASE + "}:::";
 
-    private static final ConnectionFactory FACTORY = JdbcConnection.patternBasedFactory(
+    private static final ConnectionFactory PATTERN_FACTORY = JdbcConnection.patternBasedFactory(
             URL_PATTERN,
             DRIVER_CLASS_NAME,
             CubridConnection.class.getClassLoader(),
             JdbcConfiguration.PORT.withDefault(CubridConnectorConfig.PORT.defaultValueAsString()));
+
+    /**
+     * Every JDBC connection pins its own session timezone to UTC the moment it is established —
+     * initial connect and every reconnect alike (#76-D4). This is what makes the snapshot's
+     * temporal rendering deterministic: TIMESTAMP digits read through this connection are UTC
+     * wall-clocks by construction, not by operator discipline. There is no verification-and-warn
+     * variant and no bypass switch — the session cannot be in the wrong timezone rather than
+     * being checked for it. A failed pin closes the connection and fails loudly.
+     */
+    private static final ConnectionFactory FACTORY = config -> {
+        final java.sql.Connection conn = PATTERN_FACTORY.connect(config);
+        try (java.sql.Statement stmt = conn.createStatement()) {
+            stmt.execute("SET TIME ZONE 'UTC'");
+        }
+        catch (SQLException e) {
+            try {
+                conn.close();
+            }
+            catch (SQLException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
+        return conn;
+    };
 
     public CubridConnection(JdbcConfiguration config) {
         super(config, FACTORY, QUOTED_CHARACTER, QUOTED_CHARACTER);
@@ -125,6 +150,31 @@ public class CubridConnection extends JdbcConnection {
      * PUBLIC-selectable (measured on 11.5, non-DBA account), and the stored id is immune to
      * session state such as {@code SET NAMES}, unlike a {@code CHARSET(<literal>)} probe.
      */
+    /**
+     * Snapshot value read. TIMESTAMP/DATETIME columns are read as the driver's digit string
+     * ({@code ResultSet.getString}: {@code yyyy-MM-dd HH:mm:ss[.SSS]}) and parsed strictly by
+     * {@link CubridTemporal} — never as {@code java.sql.Timestamp}, whose construction would pass
+     * the digits through the worker JVM's default zone (#76-D4: no implicit default zone). With
+     * the session pinned to UTC by {@link #FACTORY}, TIMESTAMP digits are the UTC wall-clock and
+     * restore the true instant; DATETIME digits stay zone-less. DATE/TIME keep the generic JDBC
+     * read: their driver objects round-trip construction and deconstruction in the same JVM zone,
+     * which cancels exactly.
+     */
+    @Override
+    public Object getColumnValue(ResultSet rs, int columnIndex, Column column, Table table) throws SQLException {
+        if (column.jdbcType() == Types.TIMESTAMP) {
+            final String text = rs.getString(columnIndex);
+            if (text == null) {
+                return null;
+            }
+            if ("TIMESTAMP".equalsIgnoreCase(column.typeName())) {
+                return CubridTemporal.parseTimestampUtc(text);
+            }
+            return CubridTemporal.parseDatetime(text);
+        }
+        return super.getColumnValue(rs, columnIndex, column, table);
+    }
+
     public int readDatabaseCharsetId() throws SQLException {
         try (PreparedStatement ps = connection().prepareStatement("SELECT charset FROM db_root");
                 ResultSet rs = ps.executeQuery()) {

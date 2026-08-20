@@ -152,8 +152,9 @@ curl -s localhost:8083/connector-plugins | grep -i cubrid
 ```
 
 Connect 워커에 CUBRID 설치본·네이티브 라이브러리·`LD_LIBRARY_PATH`는 **불요**하다
-(순수 Java client). 워커 JVM 타임존은 UTC로 고정할 것을 권장한다(시간 타입
-wall-clock passthrough — support-scope.md §5-10).
+(순수 Java client). 워커 JVM 타임존 설정도 **불요**하다 — 시간 타입 파이프라인은 JVM
+default zone과 무관하게 동작한다(커넥터가 매 접속 `SET TIME ZONE 'UTC'` 자가 고정,
+support-scope.md §5-10).
 
 ## 5. 커넥터 등록
 

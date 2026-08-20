@@ -24,9 +24,12 @@ import io.debezium.relational.Table;
  * <p>
  * The engine serializes each value in {@code cdc_make_dml_loginfo} (log_manager.c): fixed-size
  * numerics as host-order (little-endian) binary, NUMERIC as its decimal string, CHAR/VARCHAR as
- * raw bytes, and every date/time type as a formatted string ({@code YYYY-MM-DD HH24:MI:SS[.FF]}).
- * A SQL NULL arrives as a null data pointer — distinguishable from {@code ''} only by the pointer
- * (ADR 0003).
+ * raw bytes, and every date/time type as wire v2 ISO text — the byte-exact contract is
+ * {@code docs/htap-cdc-wire-v2.md} §3.2 ({@code YYYY-MM-DD HH24:MI:SS[.FF][ ±TZH:TZM]}, with
+ * TIMESTAMP wall-clocks rendered in UTC by the engine's CDC daemon timezone pin). Temporal
+ * parsing is strict ({@link CubridTemporal}) — v1 locale-default AM/PM text fails loudly, the
+ * lockstep safety net of #76-D5. A SQL NULL arrives as a null data pointer — distinguishable
+ * from {@code ''} only by the pointer (ADR 0003).
  */
 final class CubridLogValueDecoder {
 
@@ -88,37 +91,23 @@ final class CubridLogValueDecoder {
             case Types.DECIMAL:
                 return new BigDecimal(str(data));
             case Types.TIMESTAMP:
-                return parseDateTime(str(data).trim());
+                // both CUBRID types report jdbcType TIMESTAMP; the contract differs by typeName
+                // (#76-D3): TIMESTAMP is an instant (UTC wall-clock on the wire), DATETIME is
+                // zone-less. TZ-carrying types stay behind the UnsupportedTypeGuard until #86.
+                if ("TIMESTAMP".equalsIgnoreCase(column.typeName())) {
+                    return CubridTemporal.parseTimestampUtc(str(data));
+                }
+                return CubridTemporal.parseDatetime(str(data));
             case Types.DATE:
-                return java.sql.Date.valueOf(java.time.LocalDate.parse(str(data).trim(), CUBRID_DATE));
+                return CubridTemporal.parseDate(str(data));
             case Types.TIME:
-                return java.sql.Time.valueOf(java.time.LocalTime.parse(str(data).trim(), CUBRID_TIME));
+                return CubridTemporal.parseTime(str(data));
             case Types.CHAR:
             case Types.VARCHAR:
             case Types.NVARCHAR:
             case Types.NCHAR:
             default:
                 return str(data);
-        }
-    }
-
-    // the engine serializes date/time values in CUBRID's default output format
-    // (measured, workspace#40): DATETIME "10:00:00.000 AM 08/16/2026",
-    // TIMESTAMP "10:00:00 AM 08/16/2026"
-    private static final java.time.format.DateTimeFormatter CUBRID_DATETIME = java.time.format.DateTimeFormatter
-            .ofPattern("hh:mm:ss[.SSS] a MM/dd/uuuu", java.util.Locale.ENGLISH);
-    private static final java.time.format.DateTimeFormatter CUBRID_DATE = java.time.format.DateTimeFormatter
-            .ofPattern("MM/dd/uuuu", java.util.Locale.ENGLISH);
-    private static final java.time.format.DateTimeFormatter CUBRID_TIME = java.time.format.DateTimeFormatter
-            .ofPattern("hh:mm:ss[.SSS] a", java.util.Locale.ENGLISH);
-
-    private static java.sql.Timestamp parseDateTime(String value) {
-        try {
-            return java.sql.Timestamp.valueOf(java.time.LocalDateTime.parse(value, CUBRID_DATETIME));
-        }
-        catch (java.time.format.DateTimeParseException e) {
-            // fall back to the JDBC escape format ("2026-08-16 10:00:00[.fff]")
-            return java.sql.Timestamp.valueOf(value);
         }
     }
 

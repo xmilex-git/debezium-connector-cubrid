@@ -31,8 +31,10 @@ import io.debezium.relational.TableId;
  * (engine build with the workspace#47 patch, 2026-08-18) from INSERTs of boundary values.
  * The engine serializes in {@code cdc_make_dml_loginfo} (log_manager.c): fixed-size numerics
  * as little-endian binary, NUMERIC as its decimal string, CHAR/VARCHAR as raw UTF-8 bytes,
- * every date/time type as CUBRID's default AM/PM output format, and SQL NULL as a null data
- * pointer (ADR 0003 — distinguishable from {@code ''} only by the pointer).
+ * every date/time type as wire v2 ISO text ({@code docs/htap-cdc-wire-v2.md} §3.2 — temporal
+ * fixtures re-measured 2026-08-19 against the workspace#84 engine, TIMESTAMP wall-clocks UTC),
+ * and SQL NULL as a null data pointer (ADR 0003 — distinguishable from {@code ''} only by the
+ * pointer).
  * <p>
  * Types NOT in this corpus are the documented-unsupported set (see {@code docs/type-support.md}):
  * MONETARY, BIT/BIT VARYING, TIMESTAMPTZ/TIMESTAMPLTZ/DATETIMETZ/DATETIMELTZ, SET/MULTISET/LIST,
@@ -211,55 +213,78 @@ class CubridLogValueDecoderCorpusTest {
             col("v_dtm", 4, Types.TIMESTAMP, "DATETIME"));
 
     @Test
-    void dateTimeMinima() {
-        // measured: "01/01/0001", "12:00:00 AM", "09:00:01 AM 01/01/1970" (epoch min, KST
-        // session), "12:00:00.000 AM 01/01/0001" — 12 AM must parse as midnight, not noon
+    void wireV2MeasuredBytesDecodeExactly() {
+        // MEASURED raw hex (workspace#84 conformance evidence, cdclogdump 2026-08-19, server tz
+        // Asia/Seoul): KST session input TIMESTAMP'2026-01-02 03:04:05' arrives as the UTC
+        // wall-clock "2026-01-01 18:04:05" — the instant, not the session digits
         Object[] row = CubridLogValueDecoder.toRow(DT, List.of(
-                cvStr(0, "01/01/0001"),
-                cvStr(1, "12:00:00 AM"),
-                cvStr(2, "09:00:01 AM 01/01/1970"),
-                cvStr(3, "12:00:00.000 AM 01/01/0001")));
-        assertEquals(java.sql.Date.valueOf("0001-01-01"), row[0]);
-        assertEquals(java.sql.Time.valueOf("00:00:00"), row[1]);
-        assertEquals(java.sql.Timestamp.valueOf("1970-01-01 09:00:01"), row[2]);
-        assertEquals(java.sql.Timestamp.valueOf("0001-01-01 00:00:00"), row[3]);
+                cv(0, "323032362d30312d3032"), // "2026-01-02"
+                cv(1, "31353a30343a3035"), // "15:04:05"
+                cv(2, "323032362d30312d30312031383a30343a3035"), // "2026-01-01 18:04:05"
+                cv(3, "323032362d30312d30322030333a30343a30352e363030"))); // "2026-01-02 03:04:05.600"
+        assertEquals(java.time.LocalDate.parse("2026-01-02"), row[0]);
+        assertEquals(java.time.LocalTime.parse("15:04:05"), row[1]);
+        assertEquals(java.time.OffsetDateTime.parse("2026-01-01T18:04:05Z"), row[2]);
+        assertEquals(java.time.LocalDateTime.parse("2026-01-02T03:04:05.600"), row[3]);
+    }
+
+    @Test
+    void dateTimeMinima() {
+        // TIMESTAMP epoch floor: raw hex measured (#84 §2, FROM_UNIXTIME(1) — epoch 0 is below
+        // CUBRID's TIMESTAMP range); the v1 corpus' KST assumption ("09:00:01") is gone
+        Object[] row = CubridLogValueDecoder.toRow(DT, List.of(
+                cvStr(0, "0001-01-01"),
+                cvStr(1, "00:00:00"),
+                cv(2, "313937302d30312d30312030303a30303a3031"), // "1970-01-01 00:00:01"
+                cvStr(3, "0001-01-01 00:00:00.000")));
+        assertEquals(java.time.LocalDate.parse("0001-01-01"), row[0]);
+        assertEquals(java.time.LocalTime.MIDNIGHT, row[1]);
+        assertEquals(java.time.Instant.ofEpochSecond(1), ((java.time.OffsetDateTime) row[2]).toInstant());
+        assertEquals(java.time.LocalDateTime.parse("0001-01-01T00:00:00"), row[3]);
     }
 
     @Test
     void dateTimeMaxima() {
-        // measured: "12/31/9999", "11:59:59 PM", "12:14:07 PM 01/19/2038" (32-bit epoch max,
-        // KST), "11:59:59.999 PM 12/31/9999"
+        // 32-bit TIMESTAMP epoch max renders as its UTC wall-clock 2038-01-19 03:14:07
         Object[] row = CubridLogValueDecoder.toRow(DT, List.of(
-                cvStr(0, "12/31/9999"),
-                cvStr(1, "11:59:59 PM"),
-                cvStr(2, "12:14:07 PM 01/19/2038"),
-                cvStr(3, "11:59:59.999 PM 12/31/9999")));
-        assertEquals(java.sql.Date.valueOf("9999-12-31"), row[0]);
-        assertEquals(java.sql.Time.valueOf("23:59:59"), row[1]);
-        assertEquals(java.sql.Timestamp.valueOf("2038-01-19 12:14:07"), row[2]);
-        assertEquals(java.sql.Timestamp.valueOf("9999-12-31 23:59:59.999"), row[3]);
+                cvStr(0, "9999-12-31"),
+                cvStr(1, "23:59:59"),
+                cvStr(2, "2038-01-19 03:14:07"),
+                cvStr(3, "9999-12-31 23:59:59.999")));
+        assertEquals(java.time.LocalDate.parse("9999-12-31"), row[0]);
+        assertEquals(java.time.LocalTime.parse("23:59:59"), row[1]);
+        assertEquals(java.time.Instant.ofEpochSecond(Integer.MAX_VALUE), ((java.time.OffsetDateTime) row[2]).toInstant());
+        assertEquals(java.time.LocalDateTime.parse("9999-12-31T23:59:59.999"), row[3]);
     }
 
     @Test
-    void leapDayNoonAndMillisecondEdge() {
-        // measured: "02/29/2028", "12:00:00 PM" (noon), "10:00:00.001 AM 08/16/2026"
+    void leapDayAndMillisecondEdge() {
         Object[] row = CubridLogValueDecoder.toRow(DT, List.of(
-                cvStr(0, "02/29/2028"),
-                cvStr(1, "12:00:00 PM"),
-                cvStr(2, "10:00:00 AM 08/16/2026"),
-                cvStr(3, "10:00:00.001 AM 08/16/2026")));
-        assertEquals(java.sql.Date.valueOf("2028-02-29"), row[0]);
-        assertEquals(java.sql.Time.valueOf("12:00:00"), row[1]);
-        assertEquals(java.sql.Timestamp.valueOf("2026-08-16 10:00:00"), row[2]);
-        assertEquals(java.sql.Timestamp.valueOf("2026-08-16 10:00:00.001"), row[3]);
+                cvStr(0, "2028-02-29"),
+                cvStr(1, "12:00:00"),
+                cvStr(2, "2026-08-16 10:00:00"),
+                cvStr(3, "2026-08-16 10:00:00.001")));
+        assertEquals(java.time.LocalDate.parse("2028-02-29"), row[0]);
+        assertEquals(java.time.LocalTime.NOON, row[1]);
+        assertEquals(java.time.OffsetDateTime.parse("2026-08-16T10:00:00Z"), row[2]);
+        assertEquals(java.time.LocalDateTime.parse("2026-08-16T10:00:00.001"), row[3]);
     }
 
     @Test
-    void dateTimeJdbcEscapeFallback() {
-        // decoder falls back to the JDBC escape format when the AM/PM parse fails
-        Object[] row = CubridLogValueDecoder.toRow(DT, List.of(
-                cvStr(3, "2026-08-16 10:00:00.5")));
-        assertEquals(java.sql.Timestamp.valueOf("2026-08-16 10:00:00.5"), row[3]);
+    void v1EngineTextIsRejectedLoudly() {
+        // lockstep safety net (#76-D5 / wire v2 §3.2): a v1 engine's locale-default AM/PM text
+        // must fail the strict parser — never silently produce a value
+        assertThrows(DebeziumException.class, () -> CubridLogValueDecoder.toRow(DT,
+                List.of(cvStr(2, "09:00:01 AM 01/01/1970"))));
+        assertThrows(DebeziumException.class, () -> CubridLogValueDecoder.toRow(DT,
+                List.of(cvStr(3, "10:00:00.001 AM 08/16/2026"))));
+        assertThrows(DebeziumException.class, () -> CubridLogValueDecoder.toRow(DT,
+                List.of(cvStr(0, "01/01/0001"))));
+        assertThrows(DebeziumException.class, () -> CubridLogValueDecoder.toRow(DT,
+                List.of(cvStr(1, "12:00:00 AM"))));
+        // no lenient fallback either: the wire fraction is fixed at 3 digits
+        assertThrows(DebeziumException.class, () -> CubridLogValueDecoder.toRow(DT,
+                List.of(cvStr(3, "2026-08-16 10:00:00.5"))));
     }
 
     @Test
