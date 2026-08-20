@@ -187,10 +187,12 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
       계획 ALTER가 대기할 수 있다. 어차피 captured 테이블 DDL은 halt(§5-2)이므로,
       스키마 변경은 "커넥터 정지 → DDL → include list 갱신 → resnapshot" 순서.
     - **고정 엔진/커넥터 full SHA pair** — §6에 기록된 정확한 커밋 쌍만 지원 조합.
-      파일럿 기준선: 엔진 `bdbeaf3f184e13adf898f1a3dfb7a243c3cf5229`
-      (`xmilex-git/cubrid` `htap/cdc-select-privilege`, tag `htap-pilot-20260820`),
-      커넥터 `c59bf83761f434794ee972ba53afc69ec152a36b`
-      (`xmilex-git/debezium-connector-cubrid` `main`, tag `htap-pilot-20260820`).
+      파일럿 기준선은 두 저장소의 **immutable tag `htap-pilot-20260820`**가 권위 있는
+      포인터다(raw SHA는 tag가 가리키는 값을 따른다): 엔진 = `xmilex-git/cubrid`
+      `htap/cdc-select-privilege` @ `htap-pilot-20260820`(기능 커밋 `bdbeaf3f1`), 커넥터 =
+      `xmilex-git/debezium-connector-cubrid` `main` @ `htap-pilot-20260820`(기능 커밋
+      `85ac725` temporal TZ + 이 문서 커밋). 배포 전 `git rev-parse htap-pilot-20260820`로
+      양 저장소 tag를 확인한다.
 
 15. **DB당 CDC source connector 1개 (엔진 단일 세션)** — 엔진은 DB당 단일 CDC 세션
     (`cdc_Gl`)만 유지하며, 새 `START_SESSION`은 기존 세션의 소켓을 **강제 종료**하고
