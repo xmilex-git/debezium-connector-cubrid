@@ -17,9 +17,9 @@ CUBRID → Debezium → Kafka → ClickHouse 파이프라인을 고객사에 세
 - [ ] CUBRID 서버가 커넥터와 **같은 릴리스 번들**의 빌드인가 (구버전 서버는 커넥터가
       연결 단계에서 명시적 에러로 정지한다)
 - [ ] 캡처 대상 테이블에 **PK가 있는가** (ReplacingMergeTree 키·DELETE 라우팅에 필수)
-- [ ] 캡처 대상 테이블의 전 컬럼이 지원 13타입인가 — [type-support.md](type-support.md)
-      미지원 목록(MONETARY·BIT·TZ 계열·컬렉션·LOB·JSON) 확인. 미지원 컬럼이 있으면
-      커넥터가 기동을 거부한다
+- [ ] 캡처 대상 테이블의 전 컬럼이 지원 타입인가 — [type-support.md](type-support.md)
+      미지원 목록(MONETARY·BIT·컬렉션·LOB·JSON) 확인. TZ 4종은 workspace#86부터 지원.
+      미지원 컬럼이 있으면 커넥터가 기동을 거부한다
 - [ ] 캡처 대상 DB의 **charset이 UTF-8인가** — `SELECT charset FROM db_root`가 5(utf8)
       여야 한다(임의 계정으로 조회 가능). 비 UTF-8 DB(EUC-KR 등)는 커넥터가 기동을
       거부한다 — support-scope.md §5-12
@@ -36,6 +36,18 @@ CUBRID → Debezium → Kafka → ClickHouse 파이프라인을 고객사에 세
       §5-13). 전용 관리망에 두거나 firewall allowlist로 **Connect 워커 호스트만** 허용해야
       한다. 엔진은 localhost-bind를 지원하지 않으므로(0.0.0.0 bind) OS/네트워크 계층에서
       강제한다. 격리 확인 절차·실증: e2e `run-port-isolation-denial.sh`
+- [ ] **DB당 소스 커넥터가 하나인가** — 엔진은 DB당 단일 CDC 세션만 유지하고 새 세션이
+      기존 것을 강제 종료한다. 같은 DB에 커넥터를 둘 붙이면 crash-loop(support-scope §5-15).
+      한 DB의 모든 캡처 대상은 하나의 `table.include.list`에 모은다
+- [ ] **JDBC(snapshot)와 CDC(stream)가 같은 실서버를 보는가** — broker `databases.txt`가
+      다른 호스트를 가리키지 않도록 고정(support-scope §5-4-⑥)
+- [ ] **엔진 재설치 계획이 있으면 재설치 후 `supplemental_log=1` 재확인** 절차 합의 —
+      재설치가 `cubrid.conf`를 덮어 꺼질 수 있다
+- [ ] **고정 엔진/커넥터 full SHA pair 확인** — support-scope §5-14의 파일럿 기준선 커밋
+      쌍(tag `htap-pilot-20260820`)과 배포본이 일치하는가. 버전 혼용은 지원 조합이 아니다
+
+> 파일럿 전제조건 전체(가드 강제 vs 운영 규율 구분)는 support-scope.md **§5-14**에 통합돼
+> 있다 — 이 체크리스트는 그 요약이다.
 
 ## 2. CUBRID 엔진 설정
 

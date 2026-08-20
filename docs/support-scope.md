@@ -148,6 +148,58 @@ ClickHouse — ReplacingMergeTree(_version, _is_deleted) + canonical FINAL view 
     호스트만 허용하고 일반 사용자망 노출을 금지한다(엔진이 localhost-bind를 못 하므로
     OS/네트워크 계층에서 강제). 서버측 인증·TLS·replay 방지는 post-1.0(ADR 0011 D11).
 
+    실측 정밀화(#81 종착, 2026-08-20): raw 읽기 권한은 두 경로다 — ① 범위 미지정
+    전체 스트림 읽기는 DBA 그룹 계정을 요구한다(비-DBA는 `NO_TABLE_PRIVILEGE(-37)`로
+    거부, 부분 완화). ② 그러나 특정 테이블로 scope한 읽기는 그 테이블 SELECT 권한만
+    있으면 **비-DBA도 성공**한다(커넥터가 쓰는 per-table 인가 모델과 동일) — 민감
+    테이블에 SELECT를 가진 임의 계정 + 망 도달성이면 그 테이블 before-image가 열린다.
+    서버측 강제 부재의 근거: `scdc_*` 요청은 `CHECK_AUTHORIZATION` 없이 등록되고
+    (network_sr.c:729-745), DBA 검사는 클라이언트 측 `cubrid_log_db_login`
+    (cubrid_log.c:902)에만 있다. 실증: `run-port-isolation-denial.sh`(RISK-ALL DBA
+    전체 읽기 + RISK-SCOPED 비-DBA SELECT scoped 읽기 둘 다 before-image assert).
+
+14. **사내 파일럿 전제조건 (종착 통합, #81)** — 아래는 파일럿 시작 전 반드시 충족돼야
+    하는 조건이다. **가드로 강제되는 것**(위반 시 커넥터가 스스로 fail-fast)과 **문서·운영
+    규율로만 강제되는 것**(운영자가 지켜야 하며 코드가 막지 못함)을 구분해 명시한다.
+
+    가드로 강제(자동 차단):
+    - **DB charset = UTF-8** — 아니면 기동 거부(§5-12).
+    - **미지원 컬럼 타입 부재** — 있으면 기동 거부(§5-1, allow-list). TZ 4종은 workspace#86부터 지원.
+    - **시간대 결정론** — 엔진 데몬 tz=UTC + 커넥터 매 접속 `SET TIME ZONE 'UTC'`(§5-10, 우회 불가).
+    - **관계 identity fail-closed** — DROP/RENAME/빈 announce·include 밖 announce·bootstrap
+      미실재는 halt(§5-2, workspace#82; 실증 `run-relation-fault.sh`).
+    - **노드 identity** — barrier/stream 노드 불일치·identity 없는 anchored offset은 halt(§5-4-⑤).
+    - **엔진↔커넥터 lockstep** — 구버전 서버는 연결 단계 정지, wire v2 파서는 v1 텍스트에서 fail(§5-9).
+
+    문서·운영 규율로만 강제(운영자 책임):
+    - **CDC 포트 망 격리** — firewall allowlist(Connect 워커 호스트만) 또는 전용 관리망.
+      엔진이 localhost-bind를 못 하므로 OS/네트워크 계층에서 강제(§5-13). 파일럿 방화벽
+      실검증은 `ALLOW_HOST=<worker> DENY_HOST=<user-net> run-port-isolation-denial.sh`로
+      허용 호스트 성공 + 비허용 호스트 동일 포트 실패 + 규칙 스냅샷을 남긴다.
+    - **DB당 CDC source connector 1개** — 엔진 단일 세션 제약(§5-15). 같은 DB에 둘째
+      커넥터를 붙이면 crash-loop.
+    - **고정 include list + 변경 시 전체 resnapshot** — offset만 삭제 금지(§5-3).
+    - **JDBC(snapshot)와 CDC(barrier/stream)가 같은 실서버** — broker `databases.txt`가
+      다른 호스트를 가리키지 않도록 고정(§5-4-⑥).
+    - **엔진 재설치 후 `supplemental_log=1` 재확인** — 재설치가 `cubrid.conf`를 덮어
+      supplemental log가 꺼질 수 있다(전 승격 후보 노드, §5-4-②).
+    - **계획된 DDL은 커넥터 정지 후 수행** — 커넥터의 유휴 JDBC 세션이 read lock을 잡아
+      계획 ALTER가 대기할 수 있다. 어차피 captured 테이블 DDL은 halt(§5-2)이므로,
+      스키마 변경은 "커넥터 정지 → DDL → include list 갱신 → resnapshot" 순서.
+    - **고정 엔진/커넥터 full SHA pair** — §6에 기록된 정확한 커밋 쌍만 지원 조합.
+      파일럿 기준선: 엔진 `bdbeaf3f184e13adf898f1a3dfb7a243c3cf5229`
+      (`xmilex-git/cubrid` `htap/cdc-select-privilege`, tag `htap-pilot-20260820`),
+      커넥터 `85ac72588ca4b82f810c16f24e58ddcde5d7ab8b`
+      (`xmilex-git/debezium-connector-cubrid` `main`, tag `htap-pilot-20260820`).
+
+15. **DB당 CDC source connector 1개 (엔진 단일 세션)** — 엔진은 DB당 단일 CDC 세션
+    (`cdc_Gl`)만 유지하며, 새 `START_SESSION`은 기존 세션의 소켓을 **강제 종료**하고
+    대체한다(`scdc_start_session`, network_interface_sr.cpp). 같은 DB에 소스 커넥터를
+    둘 이상 붙이면 서로 세션을 뺏어 crash-loop가 된다. 따라서 한 DB의 모든 캡처 대상은
+    **하나의** 커넥터 인스턴스의 `table.include.list`에 모아야 한다. (이 제약은 이
+    저장소의 모든 e2e 시나리오 스크립트가 "다른 소스 커넥터 정지" 단계를 두는 이유이기도
+    하다.)
+
 ## 6. 요구 버전·엔진 기능
 
 커넥터 1.0은 다음 엔진 기능을 포함한 CUBRID 빌드를 요구한다(release-lockstep 출하 —
