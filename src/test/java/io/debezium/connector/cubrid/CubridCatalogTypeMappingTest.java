@@ -39,15 +39,22 @@ class CubridCatalogTypeMappingTest {
     }
 
     @Test
+    void tzFamilySplitsAwayFromTheDriverReport() {
+        // the driver fuses the TZ family into Types.TIMESTAMP (measured, ResultSetMetaData=93);
+        // the connector deliberately splits it (workspace#86) so the core converters key the
+        // ZonedTimestamp instant contract — typeName still distinguishes the four
+        assertEquals(Types.TIMESTAMP_WITH_TIMEZONE, CubridConnection.jdbcTypeFor("TIMESTAMPTZ"));
+        assertEquals(Types.TIMESTAMP_WITH_TIMEZONE, CubridConnection.jdbcTypeFor("TIMESTAMPLTZ"));
+        assertEquals(Types.TIMESTAMP_WITH_TIMEZONE, CubridConnection.jdbcTypeFor("DATETIMETZ"));
+        assertEquals(Types.TIMESTAMP_WITH_TIMEZONE, CubridConnection.jdbcTypeFor("DATETIMELTZ"));
+    }
+
+    @Test
     void unsupportedTypesMirrorTheDriverReportButKeepDistinctTypeNames() {
         // jdbcType overlaps a supported type on purpose (driver parity) — the fail-fast guard
         // (workspace#73) must therefore key on the typeName string, never on the jdbcType.
         assertEquals(Types.DOUBLE, CubridConnection.jdbcTypeFor("MONETARY"));
         assertEquals(Types.VARCHAR, CubridConnection.jdbcTypeFor("JSON"));
-        assertEquals(Types.TIMESTAMP, CubridConnection.jdbcTypeFor("TIMESTAMPTZ"));
-        assertEquals(Types.TIMESTAMP, CubridConnection.jdbcTypeFor("TIMESTAMPLTZ"));
-        assertEquals(Types.TIMESTAMP, CubridConnection.jdbcTypeFor("DATETIMETZ"));
-        assertEquals(Types.TIMESTAMP, CubridConnection.jdbcTypeFor("DATETIMELTZ"));
         assertEquals(Types.BINARY, CubridConnection.jdbcTypeFor("BIT"));
         assertEquals(Types.VARBINARY, CubridConnection.jdbcTypeFor("VARBIT"));
         assertEquals(Types.BLOB, CubridConnection.jdbcTypeFor("BLOB"));

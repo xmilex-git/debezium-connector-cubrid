@@ -47,6 +47,16 @@ final class CubridTemporal {
             .ofPattern("uuuu-MM-dd HH:mm:ss.SSS", Locale.ROOT).withResolverStyle(ResolverStyle.STRICT);
     private static final DateTimeFormatter DATETIME_ISO = DateTimeFormatter
             .ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS", Locale.ROOT);
+    // 'xxx' (never 'XXX'): the wire always spells the zero offset '+00:00', never 'Z' (§3.2)
+    private static final DateTimeFormatter TIMESTAMP_TZ = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd HH:mm:ss xxx", Locale.ROOT).withResolverStyle(ResolverStyle.STRICT);
+    private static final DateTimeFormatter DATETIME_TZ = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd HH:mm:ss.SSS xxx", Locale.ROOT).withResolverStyle(ResolverStyle.STRICT);
+    // Kafka renderers ('XXX': zero offset prints 'Z', matching the TIMESTAMP→ZonedTimestamp shape)
+    private static final DateTimeFormatter TIMESTAMP_TZ_ISO = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd'T'HH:mm:ssXXX", Locale.ROOT);
+    private static final DateTimeFormatter DATETIME_TZ_ISO = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSXXX", Locale.ROOT);
 
     private CubridTemporal() {
     }
@@ -78,6 +88,23 @@ final class CubridTemporal {
     }
 
     /**
+     * Wire v2 / TO_CHAR-projected JDBC {@code YYYY-MM-DD HH24:MI:SS ±TZH:TZM} → the
+     * {@link OffsetDateTime} of the value, offset preserved (workspace#86). Serves TIMESTAMPTZ
+     * (rendered in the value's own zone — the engine computes the effective offset, DST included)
+     * and TIMESTAMPLTZ (rendered in the UTC-pinned session zone, so always {@code +00:00}).
+     */
+    static OffsetDateTime parseTimestampTz(String text) {
+        return parse(text, TIMESTAMP_TZ, OffsetDateTime::from, "TIMESTAMPTZ/TIMESTAMPLTZ",
+                "YYYY-MM-DD HH24:MI:SS ±TZH:TZM");
+    }
+
+    /** Wire v2 / TO_CHAR-projected JDBC {@code YYYY-MM-DD HH24:MI:SS.FF3 ±TZH:TZM} → {@link OffsetDateTime}. */
+    static OffsetDateTime parseDatetimeTz(String text) {
+        return parse(text, DATETIME_TZ, OffsetDateTime::from, "DATETIMETZ/DATETIMELTZ",
+                "YYYY-MM-DD HH24:MI:SS.FF3 ±TZH:TZM");
+    }
+
+    /**
      * The Kafka value of a zone-less DATETIME (#76-D3): ISO-8601 local date-time with the
      * millisecond precision fixed at 3 digits, NO offset — the type carries no instant, and the
      * v1 contract's fabricated {@code Z} was the P0-3 corruption. Sinks bind it to a zone
@@ -85,6 +112,25 @@ final class CubridTemporal {
      */
     static String toIsoDatetimeString(LocalDateTime value) {
         return DATETIME_ISO.format(value);
+    }
+
+    /**
+     * The Kafka value of a TIMESTAMPTZ/TIMESTAMPLTZ (workspace#86): ISO-8601 with the value's
+     * offset preserved, second precision (the type carries no fraction). Zero offset prints
+     * {@code Z}, the same shape the inherited TIMESTAMP→ZonedTimestamp path emits.
+     */
+    static String toIsoTimestampTzString(OffsetDateTime value) {
+        return TIMESTAMP_TZ_ISO.format(value);
+    }
+
+    /**
+     * The Kafka value of a DATETIMETZ/DATETIMELTZ (workspace#86): ISO-8601 with the value's
+     * offset preserved and the millisecond precision fixed at 3 digits — the same fixed-width
+     * decision as the zone-less DATETIME string (never the core renderer's trailing-zero
+     * trimming, which would turn {@code .670} into {@code .67}).
+     */
+    static String toIsoDatetimeTzString(OffsetDateTime value) {
+        return DATETIME_TZ_ISO.format(value);
     }
 
     private static <T> T parse(String text, DateTimeFormatter format, java.time.temporal.TemporalQuery<T> query,

@@ -9,8 +9,10 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -27,6 +29,7 @@ import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.signal.actions.snapshotting.SnapshotConfiguration;
 import io.debezium.pipeline.source.SnapshottingTask;
 import io.debezium.pipeline.source.spi.SnapshotProgressListener;
+import io.debezium.relational.Column;
 import io.debezium.relational.RelationalSnapshotChangeEventSource;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
@@ -232,8 +235,36 @@ public class CubridSnapshotChangeEventSource extends RelationalSnapshotChangeEve
     protected Optional<String> getSnapshotSelect(RelationalSnapshotContext<CubridPartition, CubridOffsetContext> snapshotContext,
                                                  TableId tableId, List<String> columns) {
         return Optional.of(String.format("SELECT %s FROM %s",
-                columns.stream().collect(Collectors.joining(", ")),
+                projectColumns(snapshotContext.tables.forTable(tableId), columns),
                 connection.quotedTableIdString(tableId)));
+    }
+
+    /**
+     * Builds the snapshot projection list. TZ-family columns (jdbcType
+     * {@code TIMESTAMP_WITH_TIMEZONE}, workspace#86) are projected through
+     * {@code TO_CHAR(col, <wire v2 format>)} aliased back to the column name, so the engine
+     * renders the byte-exact wire-v2 text ({@code docs/htap-cdc-wire-v2.md} §3.2 — effective
+     * numeric offset, DST included) and {@link CubridConnection#getColumnValue} parses snapshot
+     * and stream with the same strict grammar. The alias is required: the core maps result-set
+     * columns back to the table model by name ({@code ColumnUtils.toArray}).
+     */
+    static String projectColumns(Table table, List<String> columns) {
+        return columns.stream().map(quoted -> {
+            final Column column = table == null ? null : table.columnWithName(unquote(quoted));
+            if (column == null || column.jdbcType() != Types.TIMESTAMP_WITH_TIMEZONE) {
+                return quoted;
+            }
+            final boolean fractional = column.typeName().toUpperCase(Locale.ROOT).startsWith("DATETIME");
+            return "TO_CHAR(" + quoted + ", '" + (fractional ? "YYYY-MM-DD HH24:MI:SS.FF TZH:TZM" : "YYYY-MM-DD HH24:MI:SS TZH:TZM")
+                    + "') AS " + quoted;
+        }).collect(Collectors.joining(", "));
+    }
+
+    private static String unquote(String quotedColumnName) {
+        if (quotedColumnName.length() >= 2 && quotedColumnName.startsWith("\"") && quotedColumnName.endsWith("\"")) {
+            return quotedColumnName.substring(1, quotedColumnName.length() - 1).replace("\"\"", "\"");
+        }
+        return quotedColumnName;
     }
 
     @Override

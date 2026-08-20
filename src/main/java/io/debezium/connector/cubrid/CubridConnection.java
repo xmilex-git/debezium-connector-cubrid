@@ -159,18 +159,36 @@ public class CubridConnection extends JdbcConnection {
      * restore the true instant; DATETIME digits stay zone-less. DATE/TIME keep the generic JDBC
      * read: their driver objects round-trip construction and deconstruction in the same JVM zone,
      * which cancels exactly.
+     * <p>
+     * TZ-family columns (jdbcType {@link Types#TIMESTAMP_WITH_TIMEZONE}) arrive as wire-v2 text
+     * too: the snapshot SELECT projects them through {@code TO_CHAR(col, <wire v2 format>)}
+     * ({@link CubridSnapshotChangeEventSource}), so the engine itself renders the effective
+     * numeric offset (DST included) and the same strict parser serves both paths. The driver's
+     * native object was rejected (workspace#86 D1): {@code CUBRIDTimestamptz.getTime()} is the
+     * value-zone wall-clock reinterpreted as UTC (not the instant), {@code getUnixTime()} drops
+     * trailing-zero milliseconds ({@code .670} → {@code 067}), and its zone text mixes region
+     * names and abbreviations the connector would have to resolve itself.
      */
     @Override
     public Object getColumnValue(ResultSet rs, int columnIndex, Column column, Table table) throws SQLException {
-        if (column.jdbcType() == Types.TIMESTAMP) {
+        final int jdbcType = column.jdbcType();
+        if (jdbcType == Types.TIMESTAMP || jdbcType == Types.TIMESTAMP_WITH_TIMEZONE) {
             final String text = rs.getString(columnIndex);
             if (text == null) {
                 return null;
             }
-            if ("TIMESTAMP".equalsIgnoreCase(column.typeName())) {
-                return CubridTemporal.parseTimestampUtc(text);
+            switch (column.typeName().toUpperCase(Locale.ROOT)) {
+                case "TIMESTAMP":
+                    return CubridTemporal.parseTimestampUtc(text);
+                case "TIMESTAMPTZ":
+                case "TIMESTAMPLTZ":
+                    return CubridTemporal.parseTimestampTz(text);
+                case "DATETIMETZ":
+                case "DATETIMELTZ":
+                    return CubridTemporal.parseDatetimeTz(text);
+                default:
+                    return CubridTemporal.parseDatetime(text);
             }
-            return CubridTemporal.parseDatetime(text);
         }
         return super.getColumnValue(rs, columnIndex, column, table);
     }
@@ -239,11 +257,15 @@ public class CubridConnection extends JdbcConnection {
                 return Types.TIME;
             case "TIMESTAMP":
             case "DATETIME":
+                return Types.TIMESTAMP;
             case "TIMESTAMPTZ":
             case "TIMESTAMPLTZ":
             case "DATETIMETZ":
             case "DATETIMELTZ":
-                return Types.TIMESTAMP;
+                // deliberate departure from driver parity (workspace#86): the driver fuses the TZ
+                // family into Types.TIMESTAMP (measured, ResultSetMetaData=93), but the connector
+                // splits it out so the core converters key the ZonedTimestamp (instant) contract
+                return Types.TIMESTAMP_WITH_TIMEZONE;
             case "BIT":
                 return Types.BINARY;
             case "VARBIT":

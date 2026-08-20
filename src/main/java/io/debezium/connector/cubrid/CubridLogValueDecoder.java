@@ -93,11 +93,18 @@ final class CubridLogValueDecoder {
             case Types.TIMESTAMP:
                 // both CUBRID types report jdbcType TIMESTAMP; the contract differs by typeName
                 // (#76-D3): TIMESTAMP is an instant (UTC wall-clock on the wire), DATETIME is
-                // zone-less. TZ-carrying types stay behind the UnsupportedTypeGuard until #86.
+                // zone-less.
                 if ("TIMESTAMP".equalsIgnoreCase(column.typeName())) {
                     return CubridTemporal.parseTimestampUtc(str(data));
                 }
                 return CubridTemporal.parseDatetime(str(data));
+            case Types.TIMESTAMP_WITH_TIMEZONE:
+                // TZ family (workspace#86): the wire carries the ± TZH:TZM offset suffix (§3.2);
+                // the DATETIME* variants additionally carry the .FF3 fraction
+                if (column.typeName().toUpperCase(java.util.Locale.ROOT).startsWith("DATETIME")) {
+                    return CubridTemporal.parseDatetimeTz(str(data));
+                }
+                return CubridTemporal.parseTimestampTz(str(data));
             case Types.DATE:
                 return CubridTemporal.parseDate(str(data));
             case Types.TIME:

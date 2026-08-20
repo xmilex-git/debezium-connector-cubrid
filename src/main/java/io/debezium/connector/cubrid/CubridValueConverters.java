@@ -7,6 +7,7 @@ package io.debezium.connector.cubrid;
 
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -32,8 +33,10 @@ import io.debezium.time.ZonedTimestamp;
  * PostgreSQL {@code timestamp_out} shape. The sink binds the zone explicitly (validated path:
  * ClickHouse {@code DateTime64(3,'UTC')} + {@code date_time_input_format=best_effort}).</li>
  * </ul>
- * TZ-carrying types (TIMESTAMPTZ/LTZ, DATETIMETZ/LTZ) are rejected by the
- * {@link UnsupportedTypeGuard} until workspace#86.
+ * TZ-carrying types (TIMESTAMPTZ/LTZ, DATETIMETZ/LTZ) report {@link Types#TIMESTAMP_WITH_TIMEZONE}
+ * (workspace#86): {@link ZonedTimestamp} schema (inherited core mapping), value rendered by the
+ * connector's own fixed-width formatters — offset preserved from the {@link OffsetDateTime} both
+ * paths deliver, milliseconds fixed at 3 digits for the DATETIME family.
  * <p>
  * TODO: BLOB/CLOB fidelity is out of POC scope; the generic JDBC conversions apply to everything
  * else.
@@ -63,11 +66,29 @@ public class CubridValueConverters extends JdbcValueConverters {
             }
             return data -> convertZonelessDatetime(column, fieldDefn, data);
         }
+        if (column.jdbcType() == Types.TIMESTAMP_WITH_TIMEZONE) {
+            // own renderer instead of the core's: fixed 3-digit milliseconds for the DATETIME
+            // family (the core trims .670 to .67), no fraction for the TIMESTAMP family
+            return data -> convertTzFamily(column, fieldDefn, data);
+        }
         return super.converter(column, fieldDefn);
     }
 
     private static boolean isInstantTimestamp(Column column) {
         return "TIMESTAMP".equalsIgnoreCase(column.typeName());
+    }
+
+    private Object convertTzFamily(Column column, org.apache.kafka.connect.data.Field fieldDefn, Object data) {
+        final boolean fractional = column.typeName().toUpperCase(java.util.Locale.ROOT).startsWith("DATETIME");
+        return convertValue(column, fieldDefn, data,
+                fractional ? CubridTemporal.toIsoDatetimeTzString(OffsetDateTime.of(1970, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC))
+                        : CubridTemporal.toIsoTimestampTzString(OffsetDateTime.of(1970, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)),
+                (r) -> {
+                    if (data instanceof OffsetDateTime) {
+                        r.deliver(fractional ? CubridTemporal.toIsoDatetimeTzString((OffsetDateTime) data)
+                                : CubridTemporal.toIsoTimestampTzString((OffsetDateTime) data));
+                    }
+                });
     }
 
     private Object convertZonelessDatetime(Column column, org.apache.kafka.connect.data.Field fieldDefn, Object data) {

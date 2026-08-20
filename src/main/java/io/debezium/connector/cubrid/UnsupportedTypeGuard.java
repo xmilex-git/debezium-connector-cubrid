@@ -21,17 +21,19 @@ import io.debezium.relational.Table;
  * decoded as a garbage double — so the connector refuses to start rather than let them through.
  * <p>
  * The check keys on the catalog {@code data_type} string ({@link Column#typeName()}), never on the
- * jdbcType: MONETARY/JSON/the TZ family share a jdbcType with supported types by design (driver
- * parity, {@link CubridConnection#jdbcTypeFor}). The supported set below is the 1.0 matrix of
+ * jdbcType: MONETARY/JSON share a jdbcType with supported types by design (driver parity,
+ * {@link CubridConnection#jdbcTypeFor}). The supported set below is the 1.0 matrix of
  * {@code docs/type-support.md} — an allow-list, so a type the matrix does not know also fails
- * instead of passing silently.
+ * instead of passing silently. The TZ family entered the allow-list with workspace#86
+ * (wire v2 offset suffix + TO_CHAR snapshot projection).
  */
 final class UnsupportedTypeGuard {
 
     private static final Set<String> SUPPORTED_TYPE_NAMES = Set.of(
             "SHORT", "INTEGER", "BIGINT", "NUMERIC", "FLOAT", "DOUBLE",
             "CHAR", "STRING", "ENUM",
-            "DATE", "TIME", "TIMESTAMP", "DATETIME");
+            "DATE", "TIME", "TIMESTAMP", "DATETIME",
+            "TIMESTAMPTZ", "TIMESTAMPLTZ", "DATETIMETZ", "DATETIMELTZ");
 
     private UnsupportedTypeGuard() {
     }

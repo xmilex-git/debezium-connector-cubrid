@@ -48,7 +48,10 @@ class UnsupportedTypeGuardTest {
                 col("c_num", "NUMERIC"), col("c_float", "FLOAT"), col("c_double", "DOUBLE"),
                 col("c_char", "CHAR"), col("c_str", "STRING"), col("c_enum", "ENUM"),
                 col("c_date", "DATE"), col("c_time", "TIME"),
-                col("c_ts", "TIMESTAMP"), col("c_dt", "DATETIME"))));
+                col("c_ts", "TIMESTAMP"), col("c_dt", "DATETIME"),
+                // TZ family entered the allow-list with workspace#86
+                col("c_tstz", "TIMESTAMPTZ"), col("c_tsltz", "TIMESTAMPLTZ"),
+                col("c_dttz", "DATETIMETZ"), col("c_dtltz", "DATETIMELTZ"))));
     }
 
     @Test
@@ -66,7 +69,6 @@ class UnsupportedTypeGuardTest {
     @Test
     void everyUnsupportedMatrixTypeFails() {
         for (String typeName : List.of("MONETARY", "BIT", "VARBIT",
-                "TIMESTAMPTZ", "TIMESTAMPLTZ", "DATETIMETZ", "DATETIMELTZ",
                 "SET", "MULTISET", "SEQUENCE", "BLOB", "CLOB", "JSON")) {
             assertThrows(DebeziumException.class,
                     () -> UnsupportedTypeGuard.checkTable(table(col("c", typeName))),
